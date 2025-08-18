@@ -6,20 +6,15 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    instructions: '',
-    model: 'gpt-4o-mini',
-    temperature: 0.7,
-    maxTokens: 1000,
-    isPublic: false
   });
   const [files, setFiles] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleInputChange = (e) => {
-    const { name, value, type, checked } = e.target;
+    const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
-      [name]: type === 'checkbox' ? checked : value
+      [name]: value
     }));
   };
 
@@ -40,6 +35,11 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
       return;
     }
 
+    if (!formData.description.trim()) {
+      toast.error('Description is required');
+      return;
+    }
+
     setIsSubmitting(true);
     
     try {
@@ -51,6 +51,7 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
       await onSubmit(agentData);
     } catch (error) {
       console.error('Error creating agent:', error);
+      toast.error('Failed to create agent');
     } finally {
       setIsSubmitting(false);
     }
@@ -102,7 +103,7 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
 
             <div>
               <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-2">
-                Description
+                Description *
               </label>
               <textarea
                 id="description"
@@ -112,9 +113,11 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
                 rows={3}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors resize-none text-black"
                 placeholder="Describe what this agent does"
+                required
               />
             </div>
-
+            </div>
+{/* 
             <div>
               <label htmlFor="instructions" className="block text-sm font-medium text-gray-700 mb-2">
                 System Instructions
@@ -131,7 +134,6 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
             </div>
           </div>
 
-          {/* Model Configuration */}
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-gray-900">Model Configuration</h3>
             
@@ -190,7 +192,7 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
               />
             </div>
           </div>
-
+ */}
           {/* File Upload */}
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-gray-900">Knowledge Base</h3>
@@ -255,7 +257,7 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-gray-900">Settings</h3>
             
-            <div className="flex items-center">
+            {/* <div className="flex items-center">
               <input
                 type="checkbox"
                 id="isPublic"
@@ -267,7 +269,7 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
               <label htmlFor="isPublic" className="ml-2 block text-sm text-gray-700">
                 Make this agent publicly accessible
               </label>
-            </div>
+            </div> */}
           </div>
 
           {/* Actions */}

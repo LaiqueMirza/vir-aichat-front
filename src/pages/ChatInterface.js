@@ -13,10 +13,9 @@ import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { chatAPI, agentAPI, handleApiError } from '../services/api';
-import socketService from '../services/socket';
-import TypingIndicator from '../components/TypingIndicator';
+import { chatAPI, agentAPI, leadAPI, handleApiError } from '../services/api';
 import FileUpload from '../components/FileUpload';
+import LeadCaptureForm from '../components/LeadCaptureForm';
 
 const ChatInterface = () => {
   const { agentId } = useParams();
@@ -25,18 +24,20 @@ const ChatInterface = () => {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
-  const [chatId, setChatId] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
   const [showFileUpload, setShowFileUpload] = useState(false);
+  const [showLeadForm, setShowLeadForm] = useState(true);
+  const [leadSubmitted, setLeadSubmitted] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
     if (agentId) {
       loadAgent();
       initializeChat();
+      
+      // Check if this user has already submitted lead info for this agent
+      // For now, we'll just show the form every time, but you could add logic to check localStorage or cookies
+      setShowLeadForm(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
@@ -45,37 +46,16 @@ const ChatInterface = () => {
     scrollToBottom();
   }, [messages]);
 
-  useEffect(() => {
-    // Setup socket connection
-    if (agentId) {
-      socketService.connect(agentId);
-      
-      // Socket event listeners
-      socketService.on('connectionStatus', handleConnectionStatus);
-      socketService.on('message', handleNewMessage);
-      socketService.on('typing', handleTypingStart);
-      socketService.on('stopTyping', handleTypingStop);
-      socketService.on('error', handleSocketError);
-
-      return () => {
-        socketService.off('connectionStatus', handleConnectionStatus);
-        socketService.off('message', handleNewMessage);
-        socketService.off('typing', handleTypingStart);
-        socketService.off('stopTyping', handleTypingStop);
-        socketService.off('error', handleSocketError);
-        
-        if (chatId) {
-          socketService.leaveChat(chatId);
-        }
-      };
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, chatId]);
-
   const loadAgent = async () => {
     try {
       const response = await agentAPI.getById(agentId);
-      setAgent(response.data);
+      if (response.data && response.data.data) {
+        setAgent(response.data.data);
+      } else {
+        // Handle case where response doesn't have expected structure
+        toast.error('Failed to load agent: Invalid response format');
+        navigate('/admin');
+      }
     } catch (error) {
       const errorInfo = handleApiError(error);
       toast.error(`Failed to load agent: ${errorInfo.message}`);
@@ -85,45 +65,24 @@ const ChatInterface = () => {
 
   const initializeChat = async () => {
     try {
+      setIsLoading(true);
       // Load recent chat history
       const response = await chatAPI.getHistory(agentId, 50);
-      if (response.data.length > 0) {
-        setMessages(response.data);
-        // Use the most recent chat ID
-        const recentChatId = response.data[response.data.length - 1]?.chat_id;
-        if (recentChatId) {
-          setChatId(recentChatId);
-        }
+      if (response.data && response.data.data) {
+        setMessages(response.data.data);
+      } else {
+        // Empty chat history is normal for new agents
+        console.log('No chat history found or empty history');
       }
+      setIsLoading(false);
     } catch (error) {
       console.error('Failed to load chat history:', error);
+      // Don't show error toast for new agents without history
+      if (error.response && error.response.status !== 404) {
+        toast.error('Failed to load chat history');
+      }
+      setIsLoading(false);
     }
-  };
-
-  const handleConnectionStatus = ({ connected }) => {
-    setIsConnected(connected);
-    if (connected && chatId) {
-      socketService.joinChat(chatId);
-    }
-  };
-
-  const handleNewMessage = (messageData) => {
-    setMessages(prev => [...prev, messageData]);
-    setIsTyping(false);
-    setIsLoading(false);
-  };
-
-  const handleTypingStart = () => {
-    setIsTyping(true);
-  };
-
-  const handleTypingStop = () => {
-    setIsTyping(false);
-  };
-
-  const handleSocketError = (error) => {
-    console.error('Socket error:', error);
-    toast.error('Connection error occurred');
   };
 
   const scrollToBottom = () => {
@@ -131,11 +90,14 @@ const ChatInterface = () => {
   };
 
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+    if (!inputMessage.trim() || isLoading || !leadSubmitted) return;
 
     const messageText = inputMessage.trim();
     setInputMessage('');
     setIsLoading(true);
+    
+    // Get lead_id from sessionStorage
+    const leadId = sessionStorage.getItem('lead_id');
 
     // Add user message immediately
     const userMessage = {
@@ -143,37 +105,34 @@ const ChatInterface = () => {
       message: messageText,
       sender: 'user',
       timestamp: new Date().toISOString(),
-      chat_id: chatId
+      agent_id: agentId,
+      lead_id: leadId // Include lead_id if available
     };
 
     setMessages(prev => [...prev, userMessage]);
 
     try {
-      // Send via socket if connected, otherwise use API
-      if (isConnected && chatId) {
-        socketService.sendMessage(chatId, messageText, agentId);
-      } else {
-        // Fallback to API
-        const response = await chatAPI.sendMessage(agentId, messageText, chatId);
-        
-        if (response.data.chatId && !chatId) {
-          setChatId(response.data.chatId);
-          socketService.joinChat(response.data.chatId);
-        }
-
-        // Add assistant response
-        if (response.data.response) {
-          const assistantMessage = {
-            id: Date.now() + 1,
-            message: response.data.response,
-            sender: 'assistant',
-            timestamp: new Date().toISOString(),
-            chat_id: response.data.chatId
-          };
-          setMessages(prev => [...prev, assistantMessage]);
-        }
-        setIsLoading(false);
+      // Send message via HTTP API with lead_id if available
+      const payload = { message: messageText };
+      if (leadId) {
+        payload.lead_id = leadId;
       }
+      
+      const response = await chatAPI.sendMessage(agentId, payload);
+      
+      // Add assistant response
+      if (response.data && response.data.data && response.data.data.response) {
+        const assistantMessage = {
+          id: Date.now() + 1,
+          message: response.data.data.response,
+          sender: 'assistant',
+          timestamp: new Date().toISOString(),
+          agent_id: agentId,
+          lead_id: leadId // Include lead_id if available
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+      }
+      setIsLoading(false);
     } catch (error) {
       const errorInfo = handleApiError(error);
       toast.error(`Failed to send message: ${errorInfo.message}`);
@@ -185,29 +144,26 @@ const ChatInterface = () => {
   };
 
   const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && leadSubmitted) {
       e.preventDefault();
       handleSendMessage();
     }
   };
+  
+  const handleLeadFormSubmit = () => {
+    setLeadSubmitted(true);
+    setShowLeadForm(false);
+  };
+  
+  const handleLeadFormClose = () => {
+    // If you want to allow users to skip the form, uncomment this line
+    // setShowLeadForm(false);
+    // For now, we'll keep the form visible until they submit
+    toast.error('Please provide your information to continue');
+  };
 
   const handleInputChange = (e) => {
     setInputMessage(e.target.value);
-    
-    // Send typing indicator
-    if (isConnected && chatId) {
-      socketService.startTyping(chatId);
-      
-      // Clear previous timeout
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
-      
-      // Stop typing after 2 seconds of inactivity
-      typingTimeoutRef.current = setTimeout(() => {
-        socketService.stopTyping(chatId);
-      }, 2000);
-    }
   };
 
   const handleFileUpload = async (files) => {
@@ -222,7 +178,13 @@ const ChatInterface = () => {
   };
 
   const formatMessageTime = (timestamp) => {
-    return format(new Date(timestamp), 'HH:mm');
+    try {
+      if (!timestamp) return 'N/A';
+      return format(new Date(timestamp), 'HH:mm');
+    } catch (error) {
+      console.error('Error formatting timestamp:', error);
+      return 'N/A';
+    }
   };
 
   const renderMessage = (message) => {
@@ -276,7 +238,7 @@ const ChatInterface = () => {
       </div>
     );
   }
-
+  console.log("agent", agent);
   return (
     <div className="chat-container">
       {/* Header */}
@@ -292,11 +254,14 @@ const ChatInterface = () => {
             <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
               <Bot className="w-5 h-5" />
             </div>
-            <div>
+            <div className="flex-1">
               <h1 className="font-semibold">{agent.name}</h1>
               <p className="text-sm opacity-90">
-                {isConnected ? 'Online' : 'Connecting...'}
+                {agent.name || 'AI Assistant'}
               </p>
+              <div className="text-xs opacity-75 mt-1">
+                ID: {agent.id} | Status: {agent.status} | Documents: {agent.document_count}
+              </div>
             </div>
           </div>
         </div>
@@ -329,7 +294,6 @@ const ChatInterface = () => {
         ) : (
           <>
             {messages.map(renderMessage)}
-            {isTyping && <TypingIndicator />}
             <div ref={messagesEndRef} />
           </>
         )}
@@ -343,10 +307,10 @@ const ChatInterface = () => {
             value={inputMessage}
             onChange={handleInputChange}
             onKeyPress={handleKeyPress}
-            placeholder={`Message ${agent.name}...`}
+            placeholder={leadSubmitted ? `Message ${agent.name}...` : 'Please provide your information to continue...'}
             className="chat-input"
             rows={1}
-            disabled={isLoading}
+            disabled={isLoading || !leadSubmitted}
           />
           <button
             onClick={handleSendMessage}
@@ -368,6 +332,15 @@ const ChatInterface = () => {
           onClose={() => setShowFileUpload(false)}
           onUpload={handleFileUpload}
           agentId={agentId}
+        />
+      )}
+      
+      {/* Lead Capture Form */}
+      {showLeadForm && agent && (
+        <LeadCaptureForm
+          agentId={agentId}
+          onSubmitSuccess={handleLeadFormSubmit}
+          onClose={handleLeadFormClose}
         />
       )}
     </div>

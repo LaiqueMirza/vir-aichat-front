@@ -68,26 +68,31 @@ export const agentAPI = {
 
 // Chat API
 export const chatAPI = {
-  // Get chat history (updated to match backend)
+  // Get chat history (backend route: /api/chat/:agentId/chat)
   getHistory: (agentId, clientId = null) => {
     const url = clientId 
-      ? `/chat/${agentId}?clientId=${clientId}`
-      : `/chat/${agentId}`;
+      ? `/api/chat/${agentId}?clientId=${clientId}`
+      : `/api/chat/${agentId}`;
     return api.get(url);
   },
   
-  // Send message (updated to match backend)
-  sendMessage: (agentId, message, clientId = null) => 
-    api.post(`/chat/${agentId}/message`, { message, clientId }),
+  // Send message (backend route: /api/chat/:agentId/message)
+  sendMessage: (agentId, payload, clientId = null) => {
+    // Handle both string messages and payload objects
+    const data = typeof payload === 'string' 
+      ? { message: payload, clientId } 
+      : { ...payload, clientId };
+    return api.post(`/api/chat/${agentId}/message`, data);
+  },
   
   // Get chat by ID
-  getChat: (chatId) => api.get(`/chat/session/${chatId}`),
+  getChat: (chatId) => api.get(`/api/chat/session/${chatId}`),
   
   // Delete chat
-  deleteChat: (chatId) => api.delete(`/chat/session/${chatId}`),
+  deleteChat: (chatId) => api.delete(`/api/chat/session/${chatId}`),
   
   // Get recent chats across all agents (for admin dashboard)
-  getRecentChats: (limit = 10) => api.get(`/chat/recent?limit=${limit}`)
+  getRecentChats: (limit = 10) => api.get(`/api/chat/recent?limit=${limit}`)
 };
 
 // Lead API
@@ -96,58 +101,58 @@ export const leadAPI = {
   getAll: (status = null, limit = 50, offset = 0) => {
     const params = new URLSearchParams({ limit, offset });
     if (status) params.append('status', status);
-    return api.get(`/leads/all?${params}`);
+    return api.get(`/api/leads/all?${params}`);
   },
   
   // Get leads by agent (updated to match backend)
   getByAgent: (agentId, status = null) => {
     const url = status 
-      ? `/leads/${agentId}?status=${status}`
-      : `/leads/${agentId}`;
+      ? `/api/leads/${agentId}?status=${status}`
+      : `/api/leads/${agentId}`;
     return api.get(url);
   },
   
   // Get lead by ID
-  getById: (id) => api.get(`/leads/${id}`),
+  getById: (id) => api.get(`/api/leads/${id}`),
   
   // Create lead
-  create: (agentId, leadData) => api.post(`/leads/${agentId}`, leadData),
+  create: (agentId, leadData) => api.post(`/api/leads/${agentId}`, leadData),
   
   // Update lead
-  update: (id, leadData) => api.put(`/leads/${id}`, leadData),
+  update: (id, leadData) => api.put(`/api/leads/${id}`, leadData),
   
   // Delete lead
-  delete: (id) => api.delete(`/leads/${id}`),
+  delete: (id) => api.delete(`/api/leads/${id}`),
   
   // Get lead statistics
-  getStats: (agentId) => api.get(`/leads/${agentId}/stats`)
+  getStats: (agentId) => api.get(`/api/leads/${agentId}/stats`)
 };
 
 // File API
 export const fileAPI = {
   // Get files for agent (updated to match backend)
-  getAgentFiles: (agentId) => api.get(`/files/${agentId}`),
+  getAgentFiles: (agentId) => api.get(`/api/files/${agentId}`),
   
   // Delete file
-  delete: (fileId) => api.delete(`/files/${fileId}`)
+  delete: (fileId) => api.delete(`/api/files/${fileId}`)
 };
 
 // Analytics API
 export const analyticsAPI = {
   // Get dashboard stats (matches backend endpoint)
-  getDashboardStats: (period = '30d') => api.get(`/analytics/dashboard?period=${period}`),
+  getDashboardStats: (period = '30d') => api.get(`/api/analytics/dashboard?period=${period}`),
   
   // Get per-agent analytics (matches backend endpoint)
-  getAgentAnalytics: (agentId, period = '30d') => api.get(`/analytics/${agentId}?period=${period}`),
+  getAgentAnalytics: (agentId, period = '30d') => api.get(`/api/analytics/${agentId}?period=${period}`),
   
   // Get cost breakdown (matches backend endpoint)
-  getCostBreakdown: (agentId, period = '30d') => api.get(`/analytics/${agentId}/costs?period=${period}`),
+  getCostBreakdown: (agentId, period = '30d') => api.get(`/api/analytics/${agentId}/costs?period=${period}`),
   
   // Get user engagement metrics (matches backend endpoint)
-  getUserEngagement: (agentId, period = '30d') => api.get(`/analytics/${agentId}/engagement?period=${period}`),
+  getUserEngagement: (agentId, period = '30d') => api.get(`/api/analytics/${agentId}/engagement?period=${period}`),
   
   // Get performance metrics (matches backend endpoint)
-  getPerformanceMetrics: (agentId, period = '30d') => api.get(`/analytics/${agentId}/performance?period=${period}`),
+  getPerformanceMetrics: (agentId, period = '30d') => api.get(`/api/analytics/${agentId}/performance?period=${period}`),
   
   // Alias for backward compatibility
   getUsageStats: (period = '30d') => api.get(`/analytics/dashboard?period=${period}`)
@@ -216,5 +221,7 @@ export const formatNumber = (num) => {
   }
   return new Intl.NumberFormat('en-US').format(num);
 };
+
+// This function is already defined above, removing duplicate declaration
 
 export default api;
