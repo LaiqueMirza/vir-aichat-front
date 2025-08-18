@@ -68,7 +68,7 @@ export const agentAPI = {
 
 // Chat API
 export const chatAPI = {
-  // Get chat history (updated to match backend)
+  // Get chat history
   getHistory: (agentId, clientId = null) => {
     const url = clientId 
       ? `/chat/${agentId}?clientId=${clientId}`
@@ -76,7 +76,7 @@ export const chatAPI = {
     return api.get(url);
   },
   
-  // Send message (updated to match backend)
+  // Send message
   sendMessage: (agentId, message, clientId = null) => 
     api.post(`/chat/${agentId}/message`, { message, clientId }),
   
@@ -87,7 +87,23 @@ export const chatAPI = {
   deleteChat: (chatId) => api.delete(`/chat/session/${chatId}`),
   
   // Get recent chats across all agents (for admin dashboard)
-  getRecentChats: (limit = 10) => api.get(`/chat/recent?limit=${limit}`)
+  getRecentChats: (limit = 10) => api.get(`/chat/recent?limit=${limit}`),
+
+  // Get new messages since last message ID
+  getNewMessages: (chatId, lastMessageId) => 
+    api.get(`/chat/session/${chatId}/messages?after=${lastMessageId}`),
+
+  // Update typing status
+  updateTypingStatus: (chatId, isTyping) =>
+    api.post(`/chat/session/${chatId}/typing`, { isTyping }),
+
+  // Get typing status
+  getTypingStatus: (chatId) =>
+    api.get(`/chat/session/${chatId}/typing`),
+
+  // Get chat status (includes typing indicators and online status)
+  getChatStatus: (chatId) =>
+    api.get(`/chat/session/${chatId}/status`)
 };
 
 // Lead API

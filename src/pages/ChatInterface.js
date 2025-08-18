@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   Send, 
@@ -14,9 +14,10 @@ import { format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatAPI, agentAPI, handleApiError } from '../services/api';
-import socketService from '../services/socket';
 import TypingIndicator from '../components/TypingIndicator';
 import FileUpload from '../components/FileUpload';
+
+const POLLING_INTERVAL = 3000; // 3 seconds
 
 const ChatInterface = () => {
   const { agentId } = useParams();
@@ -27,52 +28,15 @@ const ChatInterface = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [chatId, setChatId] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
   const [showFileUpload, setShowFileUpload] = useState(false);
+  const [lastMessageId, setLastMessageId] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const pollingIntervalRef = useRef(null);
 
-  useEffect(() => {
-    if (agentId) {
-      loadAgent();
-      initializeChat();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId]);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  useEffect(() => {
-    // Setup socket connection
-    if (agentId) {
-      socketService.connect(agentId);
-      
-      // Socket event listeners
-      socketService.on('connectionStatus', handleConnectionStatus);
-      socketService.on('message', handleNewMessage);
-      socketService.on('typing', handleTypingStart);
-      socketService.on('stopTyping', handleTypingStop);
-      socketService.on('error', handleSocketError);
-
-      return () => {
-        socketService.off('connectionStatus', handleConnectionStatus);
-        socketService.off('message', handleNewMessage);
-        socketService.off('typing', handleTypingStart);
-        socketService.off('stopTyping', handleTypingStop);
-        socketService.off('error', handleSocketError);
-        
-        if (chatId) {
-          socketService.leaveChat(chatId);
-        }
-      };
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, chatId]);
-
-  const loadAgent = async () => {
+  const loadAgent = useCallback(async () => {
     try {
       const response = await agentAPI.getById(agentId);
       setAgent(response.data);
@@ -81,50 +45,109 @@ const ChatInterface = () => {
       toast.error(`Failed to load agent: ${errorInfo.message}`);
       navigate('/admin');
     }
-  };
+  }, [agentId, navigate]);
 
-  const initializeChat = async () => {
+  const initializeChat = useCallback(async () => {
     try {
-      // Load recent chat history
       const response = await chatAPI.getHistory(agentId, 50);
       if (response.data.length > 0) {
         setMessages(response.data);
-        // Use the most recent chat ID
-        const recentChatId = response.data[response.data.length - 1]?.chat_id;
-        if (recentChatId) {
-          setChatId(recentChatId);
+        const recentMessage = response.data[response.data.length - 1];
+        if (recentMessage) {
+          setChatId(recentMessage.chat_id);
+          setLastMessageId(recentMessage.id);
         }
       }
     } catch (error) {
       console.error('Failed to load chat history:', error);
     }
-  };
+  }, [agentId]);
 
-  const handleConnectionStatus = ({ connected }) => {
-    setIsConnected(connected);
-    if (connected && chatId) {
-      socketService.joinChat(chatId);
+  const startPolling = useCallback(() => {
+    let failedAttempts = 0;
+    const MAX_RETRY_ATTEMPTS = 3;
+    const RETRY_DELAY = 1000; // 1 second
+
+    const poll = async () => {
+      try {
+        // Poll for new messages
+        if (lastMessageId) {
+          const messagesResponse = await chatAPI.getNewMessages(chatId, lastMessageId);
+          if (messagesResponse.data.length > 0) {
+            setMessages(prev => [...prev, ...messagesResponse.data]);
+            setLastMessageId(messagesResponse.data[messagesResponse.data.length - 1].id);
+          }
+          failedAttempts = 0; // Reset failed attempts on success
+          setIsConnected(true); // Update connection status on successful poll
+        }
+
+        // Poll for typing status
+        const typingResponse = await chatAPI.getTypingStatus(chatId);
+        setIsTyping(typingResponse.data.isTyping);
+      } catch (error) {
+        console.error('Polling error:', error);
+        failedAttempts++;
+        setIsConnected(false); // Update connection status on error
+
+        if (failedAttempts >= MAX_RETRY_ATTEMPTS) {
+          // Stop polling after max retries
+          clearInterval(pollingIntervalRef.current);
+          toast.error('Connection lost. Attempting to reconnect...');
+          
+          // Attempt to reconnect after delay
+          setTimeout(() => {
+            failedAttempts = 0;
+            pollingIntervalRef.current = setInterval(poll, POLLING_INTERVAL);
+            toast.success('Reconnected successfully!');
+            setIsConnected(true); // Update connection status on reconnect
+          }, RETRY_DELAY);
+        }
+      }
+    };
+
+    pollingIntervalRef.current = setInterval(poll, POLLING_INTERVAL);
+    setIsConnected(true); // Set initial connection status
+
+    // Initial poll
+    poll();
+
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        setIsConnected(false);
+      }
+    };
+  }, [chatId, lastMessageId]);
+
+  useEffect(() => {
+    if (agentId) {
+      loadAgent();
+      initializeChat();
     }
-  };
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, [agentId, loadAgent, initializeChat]);
 
-  const handleNewMessage = (messageData) => {
-    setMessages(prev => [...prev, messageData]);
-    setIsTyping(false);
-    setIsLoading(false);
-  };
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
-  const handleTypingStart = () => {
-    setIsTyping(true);
-  };
-
-  const handleTypingStop = () => {
-    setIsTyping(false);
-  };
-
-  const handleSocketError = (error) => {
-    console.error('Socket error:', error);
-    toast.error('Connection error occurred');
-  };
+  useEffect(() => {
+    if (chatId) {
+      startPolling();
+    }
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, [chatId, startPolling]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -137,7 +160,6 @@ const ChatInterface = () => {
     setInputMessage('');
     setIsLoading(true);
 
-    // Add user message immediately
     const userMessage = {
       id: Date.now(),
       message: messageText,
@@ -149,38 +171,29 @@ const ChatInterface = () => {
     setMessages(prev => [...prev, userMessage]);
 
     try {
-      // Send via socket if connected, otherwise use API
-      if (isConnected && chatId) {
-        socketService.sendMessage(chatId, messageText, agentId);
-      } else {
-        // Fallback to API
-        const response = await chatAPI.sendMessage(agentId, messageText, chatId);
-        
-        if (response.data.chatId && !chatId) {
-          setChatId(response.data.chatId);
-          socketService.joinChat(response.data.chatId);
-        }
+      const response = await chatAPI.sendMessage(agentId, messageText, chatId);
+      
+      if (response.data.chatId && !chatId) {
+        setChatId(response.data.chatId);
+      }
 
-        // Add assistant response
-        if (response.data.response) {
-          const assistantMessage = {
-            id: Date.now() + 1,
-            message: response.data.response,
-            sender: 'assistant',
-            timestamp: new Date().toISOString(),
-            chat_id: response.data.chatId
-          };
-          setMessages(prev => [...prev, assistantMessage]);
-        }
-        setIsLoading(false);
+      if (response.data.response) {
+        const assistantMessage = {
+          id: Date.now() + 1,
+          message: response.data.response,
+          sender: 'assistant',
+          timestamp: new Date().toISOString(),
+          chat_id: response.data.chatId
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+        setLastMessageId(assistantMessage.id);
       }
     } catch (error) {
       const errorInfo = handleApiError(error);
       toast.error(`Failed to send message: ${errorInfo.message}`);
-      setIsLoading(false);
-      
-      // Remove the user message on error
       setMessages(prev => prev.filter(msg => msg.id !== userMessage.id));
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -194,18 +207,18 @@ const ChatInterface = () => {
   const handleInputChange = (e) => {
     setInputMessage(e.target.value);
     
-    // Send typing indicator
-    if (isConnected && chatId) {
-      socketService.startTyping(chatId);
-      
-      // Clear previous timeout
+    if (chatId) {
+      // Clear existing timeout
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
-      
-      // Stop typing after 2 seconds of inactivity
+
+      // Send typing status
+      chatAPI.updateTypingStatus(chatId, true);
+
+      // Set timeout to stop typing
       typingTimeoutRef.current = setTimeout(() => {
-        socketService.stopTyping(chatId);
+        chatAPI.updateTypingStatus(chatId, false);
       }, 2000);
     }
   };
