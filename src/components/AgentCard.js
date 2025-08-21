@@ -16,13 +16,13 @@ const AgentCard = ({ agent, onDelete }) => {
   const [showMenu, setShowMenu] = useState(false);
 
   const handleChatClick = () => {
-    window.open(`/chat/${agent.id}`, '_blank');
+    window.open(`/chat/${agent.agent_id}`, '_blank');
   };
 
   const handleDeleteClick = (e) => {
     e.stopPropagation();
     setShowMenu(false);
-    onDelete(agent.id);
+    onDelete(agent.agent_id);
   };
 
   const getStatusColor = (status) => {

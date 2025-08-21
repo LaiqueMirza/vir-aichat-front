@@ -27,7 +27,7 @@ const LeadCard = ({ lead, onDelete, onEdit, onViewChat }) => {
 
   const handleDeleteClick = () => {
     if (onDelete) {
-      onDelete(lead.id);
+      onDelete(lead.lead_id);
     }
     setShowMenu(false);
   };

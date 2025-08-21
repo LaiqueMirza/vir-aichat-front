@@ -66,7 +66,7 @@ const RecentChats = ({ chats = [], onChatClick }) => {
       <div className="space-y-3">
         {chats.map((chat) => (
           <div
-            key={chat.id}
+            key={chat.chat_id}
             onClick={() => onChatClick && onChatClick(chat)}
             className="p-4 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
           >

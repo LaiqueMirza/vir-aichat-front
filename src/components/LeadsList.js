@@ -183,7 +183,7 @@ const LeadsList = ({ leads = [], onLeadClick }) => {
       <div className="space-y-4">
         {filteredLeads.map((lead) => (
           <div
-            key={lead.id}
+            key={lead.lead_id}
             onClick={() => onLeadClick && onLeadClick(lead)}
             className="p-4 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
           >

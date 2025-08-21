@@ -310,6 +310,72 @@
   border-bottom-left-radius: 4px;
 }
 
+/* Markdown content styling within messages */
+.message-content ul {
+  margin: 0.5rem 0;
+  padding-left: 0;
+}
+
+.message-content li {
+  margin: 0.25rem 0;
+  list-style-position: inside;
+}
+
+.message-content strong {
+  font-weight: 600;
+}
+
+.message-content p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.message-content p + p {
+  margin-top: 0.5rem;
+}
+
+.message-content h1,
+.message-content h2,
+.message-content h3 {
+  margin: 0.5rem 0 0.25rem 0;
+  line-height: 1.4;
+}
+
+.message-content h1:first-child,
+.message-content h2:first-child,
+.message-content h3:first-child {
+  margin-top: 0;
+}
+
+.message-content pre {
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.message-content code {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+/* Responsive adjustments for markdown content */
+@media (max-width: 768px) {
+  .message-content {
+    max-width: 85%;
+    font-size: 0.9rem;
+  }
+  
+  .message-content h1 {
+    font-size: 1.125rem;
+  }
+  
+  .message-content h2 {
+    font-size: 1rem;
+  }
+  
+  .message-content h3 {
+    font-size: 0.9rem;
+  }
+}
+
 .message-time {
   font-size: 0.75rem;
   color: #64748b;
@@ -462,4 +528,23 @@
 
 .retry-button:hover {
   background: #b91c1c;
+}
+
+/* System Message Styles */
+.message.system .message-content {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  border-bottom-left-radius: 4px;
+}
+
+.error-message-content {
+  background: #fef2f2 !important;
+  color: #dc2626 !important;
+  border: 1px solid #fecaca !important;
+}
+
+.message.system .message-avatar {
+  background: #dc2626;
+  color: white;
 }

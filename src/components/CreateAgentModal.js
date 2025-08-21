@@ -43,12 +43,21 @@ const CreateAgentModal = ({ onClose, onSubmit }) => {
     setIsSubmitting(true);
     
     try {
-      const agentData = {
-        ...formData,
-        files: files
-      };
+      // Create FormData instance
+      const formDataToSubmit = new FormData();
       
-      await onSubmit(agentData);
+      // Append basic agent data
+      formDataToSubmit.append('name', formData.name);
+      formDataToSubmit.append('description', formData.description);
+      
+      // Append each file
+      files.forEach(file => {
+        formDataToSubmit.append('file', file);
+      });
+      
+      await onSubmit(formDataToSubmit);
+      toast.success('Agent created successfully');
+      onClose();
     } catch (error) {
       console.error('Error creating agent:', error);
       toast.error('Failed to create agent');

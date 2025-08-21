@@ -104,7 +104,7 @@ const Dashboard = () => {
     if (window.confirm('Are you sure you want to delete this agent?')) {
       try {
         await agentAPI.delete(agentId);
-        setAgents(agents.filter(agent => agent.id !== agentId));
+        setAgents(agents.filter(agent => agent.agent_id !== agentId));
       } catch (error) {
         console.error('Error deleting agent:', error);
       }
@@ -115,7 +115,7 @@ const Dashboard = () => {
     if (window.confirm('Are you sure you want to delete this lead?')) {
       try {
         await leadAPI.delete(leadId);
-        setRecentLeads(recentLeads.filter(lead => lead.id !== leadId));
+        setRecentLeads(recentLeads.filter(lead => lead.lead_id !== leadId));
       } catch (error) {
         console.error('Error deleting lead:', error);
       }
@@ -307,7 +307,7 @@ const Dashboard = () => {
           <div className="space-y-4">
             {Array.isArray(agents) && agents.slice(0, 3).map((agent) => (
               <AgentCard
-                key={agent.id}
+                key={agent.agent_id}
                 agent={agent}
                 onDelete={handleDeleteAgent}
               />
@@ -334,7 +334,7 @@ const Dashboard = () => {
           <div className="space-y-4">
             {recentLeads.slice(0, 3).map((lead) => (
               <LeadCard
-                key={lead.id}
+                key={lead.lead_id}
                 lead={lead}
                 onDelete={handleDeleteLead}
               />

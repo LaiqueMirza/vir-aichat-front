@@ -13,6 +13,7 @@ import toast from 'react-hot-toast';
 import { agentAPI, analyticsAPI, chatAPI, leadAPI, handleApiError, formatCurrency, formatNumber } from '../services/api';
 import AgentCard from '../components/AgentCard';
 import CreateAgentModal from '../components/CreateAgentModal';
+import ConfirmationModal from '../components/ConfirmationModal';
 import StatsCard from '../components/StatsCard';
 import RecentChats from '../components/RecentChats';
 import CostAnalytics from '../components/CostAnalytics';
@@ -33,8 +34,9 @@ const AdminDashboard = () => {
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [agentToDelete, setAgentToDelete] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
-  console.log('agents:', agents);
   useEffect(() => {
     loadDashboardData();
   }, []);
@@ -72,26 +74,14 @@ const AdminDashboard = () => {
         console.error('Failed to fetch leads:', error);
       }
 
-      // Debug logging
-      console.log('=== AGENTS RESPONSE DEBUG ===');
-      console.log('agentsResponse:', agentsResponse);
-      console.log('agentsResponse.data:', agentsResponse?.data);
-      console.log('agentsResponse.data.success:', agentsResponse?.data?.success);
-      console.log('agentsResponse.data.data:', agentsResponse?.data?.data);
       
       // The API returns { success: true, data: [...] }
       // With axios, the response is wrapped in .data, so agentsResponse.data = { success: true, data: [...] }
       const agentsData = agentsResponse?.data?.data || [];
-      console.log('agentsData after processing:', agentsData);
-      console.log('agentsData is array:', Array.isArray(agentsData));
-      console.log('agentsData length:', agentsData.length);
       
       const finalAgents = Array.isArray(agentsData) ? agentsData : [];
-      console.log('finalAgents:', finalAgents);
-      console.log('finalAgents length:', finalAgents.length);
       
       setAgents(finalAgents);
-      console.log('setAgents called with:', finalAgents);
       
       // Handle the analytics data structure from backend
       const analyticsData = statsResponse?.data?.data || statsResponse?.data || {};
@@ -141,8 +131,11 @@ const AdminDashboard = () => {
 
   const handleCreateAgent = async (agentData) => {
     try {
+      // Create the agent with all data including files
       const response = await agentAPI.create(agentData);
-      setAgents(prev => [...prev, response.data]);
+      const newAgent = response.data.data;
+      
+      setAgents(prev => [...prev, newAgent]);
       setStats(prev => ({ ...prev, totalAgents: prev.totalAgents + 1 }));
       setShowCreateModal(false);
       toast.success('Agent created successfully!');
@@ -152,20 +145,35 @@ const AdminDashboard = () => {
     }
   };
 
-  const handleDeleteAgent = async (agentId) => {
-    if (!window.confirm('Are you sure you want to delete this agent? This action cannot be undone.')) {
-      return;
-    }
+  const handleDeleteAgent = (agentId) => {
+    setAgentToDelete(agentId);
+    setShowDeleteModal(true);
+  };
+
+  const confirmDeleteAgent = async () => {
+    if (!agentToDelete) return;
 
     try {
-      await agentAPI.delete(agentId);
-      setAgents(prev => prev.filter(agent => agent.id !== agentId));
+      await agentAPI.delete(agentToDelete);
+      setAgents(prev => prev.filter(agent => agent.agent_id !== agentToDelete));
       setStats(prev => ({ ...prev, totalAgents: Math.max(0, prev.totalAgents - 1) }));
+      setShowDeleteModal(false);
+      setAgentToDelete(null);
       toast.success('Agent deleted successfully');
+      
+      // on delete, reload the dashboard data
+      loadDashboardData();
     } catch (error) {
       const errorInfo = handleApiError(error);
       toast.error(`Failed to delete agent: ${errorInfo.message}`);
+      setShowDeleteModal(false);
+      setAgentToDelete(null);
     }
+  };
+
+  const cancelDeleteAgent = () => {
+    setShowDeleteModal(false);
+    setAgentToDelete(null);
   };
 
   const renderOverview = () => (
@@ -240,7 +248,7 @@ const AdminDashboard = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {Array.isArray(agents) && agents.map(agent => (
               <AgentCard
-                key={agent.id}
+                key={agent.agent_id}
                 agent={agent}
                 onDelete={handleDeleteAgent}
               />
@@ -346,6 +354,14 @@ const AdminDashboard = () => {
           onSubmit={handleCreateAgent}
         />
       )}
+      
+      <ConfirmationModal
+        isOpen={showDeleteModal}
+        onConfirm={confirmDeleteAgent}
+        onCancel={cancelDeleteAgent}
+        title="Delete Agent"
+        message="Are you sure you want to delete this agent? This action cannot be undone."
+      />
     </div>
   );
 };
