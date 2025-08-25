@@ -7,7 +7,8 @@ import {
   ExternalLink,
   Bot,
   FileText,
-  DollarSign
+  DollarSign,
+  Zap
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { formatCurrency, formatNumber } from '../services/api';
@@ -100,7 +101,7 @@ const AgentCard = ({ agent, onDelete }) => {
             <MessageSquare className="w-4 h-4" />
           </div>
           <div className="text-lg font-semibold text-gray-900">
-            {formatNumber(agent.total_chats || 0)}
+            {formatNumber(agent.analytics?.totalChats || agent.total_chats || 0)}
           </div>
           <div className="text-xs text-gray-500">Conversations</div>
         </div>
@@ -110,22 +111,32 @@ const AgentCard = ({ agent, onDelete }) => {
             <TrendingUp className="w-4 h-4" />
           </div>
           <div className="text-lg font-semibold text-gray-900">
-            {formatNumber(agent.total_leads || 0)}
+            {formatNumber(agent.analytics?.totalLeads || agent.total_leads || 0)}
           </div>
           <div className="text-xs text-gray-500">Leads</div>
         </div>
       </div>
 
       {/* Additional Stats */}
-      <div className="grid grid-cols-2 gap-4 mb-4 pt-4 border-t border-gray-100">
+      <div className="grid grid-cols-3 gap-3 mb-4 pt-4 border-t border-gray-100">
         <div className="text-center">
           <div className="flex items-center justify-center gap-1 text-purple-600 mb-1">
             <FileText className="w-4 h-4" />
           </div>
           <div className="text-sm font-medium text-gray-900">
-            {formatNumber(agent.document_count || 0)}
+            {formatNumber(agent.analytics?.totalFiles || agent.document_count || 0)}
           </div>
-          <div className="text-xs text-gray-500">Documents</div>
+          <div className="text-xs text-gray-500">Files</div>
+        </div>
+        
+        <div className="text-center">
+          <div className="flex items-center justify-center gap-1 text-indigo-600 mb-1">
+            <Zap className="w-4 h-4" />
+          </div>
+          <div className="text-sm font-medium text-gray-900">
+            {formatNumber(agent.analytics?.totalTokens || 0)}
+          </div>
+          <div className="text-xs text-gray-500">Tokens</div>
         </div>
         
         <div className="text-center">
@@ -133,9 +144,9 @@ const AgentCard = ({ agent, onDelete }) => {
             <DollarSign className="w-4 h-4" />
           </div>
           <div className="text-sm font-medium text-gray-900">
-            {formatCurrency(agent.total_cost || 0)}
+            {"$" + (agent.analytics?.totalCost || agent.total_cost || 0)}
           </div>
-          <div className="text-xs text-gray-500">Total Cost</div>
+          <div className="text-xs text-gray-500">Cost</div>
         </div>
       </div>
 

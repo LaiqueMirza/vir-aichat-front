@@ -145,6 +145,9 @@ export const analyticsAPI = {
   // Get dashboard stats (matches backend endpoint)
   getDashboardStats: (period = '30d') => api.get(`/analytics/dashboard?period=${period}`),
   
+  // POST dashboard stats (new endpoint)
+  postDashboardStats: (period = '30d') => api.post('/analytics/dashboard', { period }),
+  
   // Get per-agent analytics (matches backend endpoint)
   getAgentAnalytics: (agentId, period = '30d') => api.get(`/analytics/${agentId}?period=${period}`),
   

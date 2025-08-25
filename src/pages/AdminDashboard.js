@@ -7,17 +7,16 @@ import {
   Plus,
   Settings,
   BarChart3,
-  Activity
+  Activity,
+  FileText
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { agentAPI, analyticsAPI, chatAPI, leadAPI, handleApiError, formatCurrency, formatNumber } from '../services/api';
+import { agentAPI, analyticsAPI, handleApiError, formatCurrency, formatNumber } from '../services/api';
 import AgentCard from '../components/AgentCard';
 import CreateAgentModal from '../components/CreateAgentModal';
 import ConfirmationModal from '../components/ConfirmationModal';
 import StatsCard from '../components/StatsCard';
-import RecentChats from '../components/RecentChats';
 import CostAnalytics from '../components/CostAnalytics';
-import LeadsList from '../components/LeadsList';
 
 const AdminDashboard = () => {
   const [agents, setAgents] = useState([]);
@@ -30,9 +29,10 @@ const AdminDashboard = () => {
     monthlyLeads: 0,
     monthlyCost: 0
   });
-  const [recentChats, setRecentChats] = useState([]);
-  const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [agentsError, setAgentsError] = useState(null);
+  const [statsError, setStatsError] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [agentToDelete, setAgentToDelete] = useState(null);
@@ -43,88 +43,57 @@ const AdminDashboard = () => {
 
   const loadDashboardData = async () => {
     setLoading(true);
+    setError(null);
+    setAgentsError(null);
+    setStatsError(null);
       
-      // Call APIs individually to prevent one failure from affecting others
+      // Call only essential APIs for dashboard overview
       let agentsResponse = null;
-      let statsResponse = null;
-      let chatsResponse = null;
-      let leadsResponse = null;
+      let analyticsResponse = null;
+      let hasErrors = false;
 
       try {
         agentsResponse = await agentAPI.getAll();
       } catch (error) {
         console.error('Failed to fetch agents:', error);
+        setAgentsError('Failed to load agents. Please try refreshing the page.');
+        hasErrors = true;
       }
-
+      
       try {
-        statsResponse = await analyticsAPI.getDashboardStats('30d');
+        analyticsResponse = await analyticsAPI.postDashboardStats('30d');
       } catch (error) {
-        console.error('Failed to fetch stats:', error);
+        console.error('Failed to fetch analytics:', error);
+        setStatsError('Failed to load analytics data. Please try refreshing the page.');
+        hasErrors = true;
       }
-
-      try {
-        chatsResponse = await chatAPI.getRecentChats(10);
-      } catch (error) {
-        console.error('Failed to fetch recent chats:', error);
-      }
-
-      try {
-        leadsResponse = await leadAPI.getAll(null, 20, 0);
-      } catch (error) {
-        console.error('Failed to fetch leads:', error);
-      }
-
       
       // The API returns { success: true, data: [...] }
       // With axios, the response is wrapped in .data, so agentsResponse.data = { success: true, data: [...] }
       const agentsData = agentsResponse?.data?.data || [];
+      const analyticsData = analyticsResponse?.data?.data || {};
       
       const finalAgents = Array.isArray(agentsData) ? agentsData : [];
       
       setAgents(finalAgents);
       
       // Handle the analytics data structure from backend
-      const analyticsData = statsResponse?.data?.data || statsResponse?.data || {};
-      const overview = analyticsData.overview || {};
-      
       setStats({
         totalAgents: agentsData.length || 0,
-        totalChats: overview.totalChats || 0,
-        totalLeads: overview.totalLeads || 0,
-        totalCost: overview.totalCost || 0,
-        monthlyChats: overview.totalMessages || 0,
-        monthlyLeads: overview.totalLeads || 0,
-        monthlyCost: overview.totalCost || 0,
-        totalMessages: overview.totalMessages || 0,
-        uniqueUsers: overview.uniqueUsers || 0,
-        activeAgents: overview.activeAgents || 0,
-        totalTokens: overview.totalTokens || 0,
-        totalFiles: overview.totalFiles || 0,
-        totalFileSize: overview.totalFileSize || 0
+        totalChats: analyticsData.totalChats || 0,
+        totalLeads: analyticsData.totalLeads || 0,
+        totalCost: analyticsData.totalCost || 0,
+        totalTokens: analyticsData.totalTokens || 0,
+        totalFiles: analyticsData.totalFiles || 0,
+        monthlyChats: 0, // These could be calculated from analytics if needed
+        monthlyLeads: 0,
+        monthlyCost: 0
       });
 
-      // Set recent chats data and transform to match component expectations
-      const chatsData = chatsResponse?.data?.data || chatsResponse?.data || [];
-      const transformedChats = Array.isArray(chatsData) ? chatsData.map(chat => ({
-        ...chat,
-        agentName: chat.agent_name,
-        leadName: chat.client_name,
-        leadEmail: chat.client_email,
-        createdAt: chat.created_at,
-        lastMessageAt: chat.last_message_at || chat.created_at
-      })) : [];
-      setRecentChats(transformedChats);
-
-      // Set leads data and transform to match component expectations
-      const leadsData = leadsResponse?.data?.data || leadsResponse?.data || [];
-      const transformedLeads = Array.isArray(leadsData) ? leadsData.map(lead => ({
-        ...lead,
-        agentName: lead.agent_name,
-        createdAt: lead.created_at,
-        updatedAt: lead.updated_at,
-        chatCount: lead.chat_count || 0
-      })) : [];
-      setLeads(transformedLeads);
+      // Set general error if both requests failed
+      if (hasErrors && !agentsResponse && !analyticsResponse) {
+        setError('Failed to load dashboard data. Please check your connection and try again.');
+      }
       
       setLoading(false);
   };
@@ -178,40 +147,87 @@ const AdminDashboard = () => {
 
   const renderOverview = () => (
     <div className="space-y-6">
+      {/* Error Display */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <div className="w-4 h-4 bg-red-500 rounded-full mr-3"></div>
+              <p className="text-red-800 font-medium">Error Loading Dashboard</p>
+            </div>
+            <button
+              onClick={loadDashboardData}
+              className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+          <p className="text-red-600 text-sm mt-2">{error}</p>
+        </div>
+      )}
+
       {/* Stats Grid */}
       <div className="stats-grid">
-        <StatsCard
-          title="Total Agents"
-          value={formatNumber(stats.totalAgents)}
-          icon={Users}
-          color="blue"
-          change={`+${stats.newAgentsThisMonth || 0} this month`}
-          changeType="positive"
-        />
-        <StatsCard
-          title="Total Conversations"
-          value={formatNumber(stats.totalChats)}
-          icon={MessageSquare}
-          color="green"
-          change={`+${formatNumber(stats.monthlyChats)} this month`}
-          changeType="positive"
-        />
-        <StatsCard
-          title="Total Leads"
-          value={formatNumber(stats.totalLeads)}
-          icon={TrendingUp}
-          color="purple"
-          change={`+${formatNumber(stats.monthlyLeads)} this month`}
-          changeType="positive"
-        />
-        <StatsCard
-          title="Total Cost"
-          value={formatCurrency(stats.totalCost)}
-          icon={DollarSign}
-          color="orange"
-          change={`${formatCurrency(stats.monthlyCost)} this month`}
-          changeType="neutral"
-        />
+        {statsError ? (
+          <div className="col-span-full bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <div className="w-4 h-4 bg-yellow-500 rounded-full mr-3"></div>
+                <p className="text-yellow-800 font-medium">Stats Unavailable</p>
+              </div>
+              <button
+                onClick={loadDashboardData}
+                className="px-3 py-1 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700 transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+            <p className="text-yellow-600 text-sm mt-2">{statsError}</p>
+          </div>
+        ) : (
+          <>
+            <StatsCard
+              title="Total Agents"
+              value={formatNumber(stats.totalAgents)}
+              icon={Users}
+              color="blue"
+              change={`+${stats.newAgentsThisMonth || 0} this month`}
+              changeType="positive"
+            />
+            <StatsCard
+              title="Total Conversations"
+              value={formatNumber(stats.totalChats)}
+              icon={MessageSquare}
+              color="green"
+              change={`+${formatNumber(stats.monthlyChats)} this month`}
+              changeType="positive"
+            />
+            <StatsCard
+              title="Total Leads"
+              value={formatNumber(stats.totalLeads)}
+              icon={TrendingUp}
+              color="purple"
+              change={`+${formatNumber(stats.monthlyLeads)} this month`}
+              changeType="positive"
+            />
+            <StatsCard
+              title="Total Files"
+              value={formatNumber(stats.totalFiles)}
+              icon={FileText}
+              color="indigo"
+              change={`+0 this month`}
+              changeType="neutral"
+            />
+            <StatsCard
+              title="Total Cost"
+              value={formatCurrency(stats.totalCost)}
+              icon={DollarSign}
+              color="orange"
+              change={`${formatCurrency(stats.monthlyCost)} this month`}
+              changeType="neutral"
+            />
+          </>
+        )}
       </div>
 
       {/* Agents Section */}
@@ -227,16 +243,32 @@ const AdminDashboard = () => {
           </button>
         </div>
         
-        {loading ? (
+        {agentsError ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center">
+                <div className="w-4 h-4 bg-red-500 rounded-full mr-3"></div>
+                <p className="text-red-800 font-medium">Failed to Load Agents</p>
+              </div>
+              <button
+                onClick={loadDashboardData}
+                className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+            <p className="text-red-600 text-sm">{agentsError}</p>
+          </div>
+        ) : loading ? (
           <div className="loading-container">
             <div className="loading-spinner"></div>
+            <p className="text-center text-gray-500 mt-4">Loading agents...</p>
           </div>
         ) : agents.length === 0 ? (
           <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
             <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No agents yet</h3>
             <p className="text-gray-500 mb-4">Create your first AI agent to get started</p>
-            <p className="text-xs text-red-500 mb-4">DEBUG: agents.length = {agents.length}, agents = {JSON.stringify(agents)}</p>
             <button
               onClick={() => setShowCreateModal(true)}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -266,25 +298,9 @@ const AdminDashboard = () => {
     </div>
   );
 
-  const renderLeads = () => (
-    <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-gray-900">Lead Management</h2>
-      <LeadsList leads={leads} />
-    </div>
-  );
-
-  const renderChats = () => (
-    <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-gray-900">Recent Conversations</h2>
-      <RecentChats chats={recentChats} />
-    </div>
-  );
-
   const tabs = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
-    { id: 'analytics', label: 'Analytics', icon: Activity },
-    { id: 'leads', label: 'Leads', icon: TrendingUp },
-    { id: 'chats', label: 'Chats', icon: MessageSquare },
+    // { id: 'analytics', label: 'Analytics', icon: Activity },
   ];
 
   if (loading && agents.length === 0) {
@@ -343,8 +359,6 @@ const AdminDashboard = () => {
       <div className="admin-content">
         {activeTab === 'overview' && renderOverview()}
         {activeTab === 'analytics' && renderAnalytics()}
-        {activeTab === 'leads' && renderLeads()}
-        {activeTab === 'chats' && renderChats()}
       </div>
 
       {/* Create Agent Modal */}
