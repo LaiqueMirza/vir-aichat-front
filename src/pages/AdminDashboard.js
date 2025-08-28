@@ -14,9 +14,12 @@ import toast from 'react-hot-toast';
 import { agentAPI, analyticsAPI, handleApiError, formatCurrency, formatNumber } from '../services/api';
 import AgentCard from '../components/AgentCard';
 import CreateAgentModal from '../components/CreateAgentModal';
+import EditAgentModal from '../components/EditAgentModal';
 import ConfirmationModal from '../components/ConfirmationModal';
 import StatsCard from '../components/StatsCard';
 import CostAnalytics from '../components/CostAnalytics';
+import LeadsTab from '../components/LeadsTab';
+import ChatsTab from '../components/ChatsTab';
 
 const AdminDashboard = () => {
   const [agents, setAgents] = useState([]);
@@ -34,8 +37,10 @@ const AdminDashboard = () => {
   const [agentsError, setAgentsError] = useState(null);
   const [statsError, setStatsError] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [agentToDelete, setAgentToDelete] = useState(null);
+  const [agentToEdit, setAgentToEdit] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   useEffect(() => {
     loadDashboardData();
@@ -143,6 +148,24 @@ const AdminDashboard = () => {
   const cancelDeleteAgent = () => {
     setShowDeleteModal(false);
     setAgentToDelete(null);
+  };
+
+  const handleEditAgent = (agent) => {
+    setAgentToEdit(agent);
+    setShowEditModal(true);
+  };
+
+  const handleAgentUpdated = (updatedAgent) => {
+    setAgents(prev => prev.map(agent => 
+      agent.agent_id === updatedAgent.agent_id ? updatedAgent : agent
+    ));
+    // Reload dashboard data to get updated analytics
+    loadDashboardData();
+  };
+
+  const handleCloseEditModal = () => {
+    setShowEditModal(false);
+    setAgentToEdit(null);
   };
 
   const renderOverview = () => (
@@ -283,6 +306,7 @@ const AdminDashboard = () => {
                 key={agent.agent_id}
                 agent={agent}
                 onDelete={handleDeleteAgent}
+                onEdit={handleEditAgent}
               />
             ))}
           </div>
@@ -300,6 +324,8 @@ const AdminDashboard = () => {
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
+    { id: 'leads', label: 'Leads', icon: TrendingUp },
+    { id: 'chats', label: 'Chats', icon: MessageSquare },
     // { id: 'analytics', label: 'Analytics', icon: Activity },
   ];
 
@@ -358,6 +384,8 @@ const AdminDashboard = () => {
       {/* Content */}
       <div className="admin-content">
         {activeTab === 'overview' && renderOverview()}
+        {activeTab === 'leads' && <LeadsTab />}
+        {activeTab === 'chats' && <ChatsTab />}
         {activeTab === 'analytics' && renderAnalytics()}
       </div>
 
@@ -366,6 +394,16 @@ const AdminDashboard = () => {
         <CreateAgentModal
           onClose={() => setShowCreateModal(false)}
           onSubmit={handleCreateAgent}
+        />
+      )}
+      
+      {/* Edit Agent Modal */}
+      {showEditModal && agentToEdit && (
+        <EditAgentModal
+          agent={agentToEdit}
+          isOpen={showEditModal}
+          onClose={handleCloseEditModal}
+          onAgentUpdated={handleAgentUpdated}
         />
       )}
       

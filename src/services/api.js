@@ -56,8 +56,28 @@ export const agentAPI = {
     return api.post('/agents', agentData, { headers });
   },
   
-  // Update agent
-  update: (id, agentData) => api.put(`/agents/${id}`, agentData),
+  // Update agent with file management
+  update: (id, agentData) => {
+    const formData = new FormData();
+    formData.append('name', agentData.name);
+    formData.append('description', agentData.description || '');
+    
+    // Add files to delete if specified
+    if (agentData.filesToDelete && agentData.filesToDelete.length > 0) {
+      formData.append('filesToDelete', JSON.stringify(agentData.filesToDelete));
+    }
+    
+    // Add new files if they exist
+    if (agentData.newFiles && agentData.newFiles.length > 0) {
+      agentData.newFiles.forEach(file => {
+        formData.append('file', file);
+      });
+    }
+    
+    return api.put(`/agents/${id}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
   
   // Delete agent
   delete: (id) => api.delete(`/agents/${id}`),
@@ -95,7 +115,7 @@ export const chatAPI = {
   deleteChat: (chatId) => api.delete(`/chat/session/${chatId}`),
   
   // Get recent chats across all agents (for admin dashboard)
-  getRecentChats: (limit = 10) => api.get(`/chat/recent?limit=${limit}`)
+  getRecentChats: ({ limit = 20, offset = 0 } = {}) => api.get(`/chat/admin/recent?limit=${limit}&offset=${offset}`)
 };
 
 // Lead API

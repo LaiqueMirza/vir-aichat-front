@@ -8,12 +8,13 @@ import {
   Bot,
   FileText,
   DollarSign,
-  Zap
+  Zap,
+  Edit
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { formatCurrency, formatNumber } from '../services/api';
 
-const AgentCard = ({ agent, onDelete }) => {
+const AgentCard = ({ agent, onDelete, onEdit }) => {
   const [showMenu, setShowMenu] = useState(false);
 
   const handleChatClick = () => {
@@ -24,6 +25,14 @@ const AgentCard = ({ agent, onDelete }) => {
     e.stopPropagation();
     setShowMenu(false);
     onDelete(agent.agent_id);
+  };
+
+  const handleEditClick = (e) => {
+    e.stopPropagation();
+    setShowMenu(false);
+    if (onEdit) {
+      onEdit(agent);
+    }
   };
 
   const getStatusColor = (status) => {
@@ -75,6 +84,15 @@ const AgentCard = ({ agent, onDelete }) => {
                 <ExternalLink className="w-4 h-4" />
                 Open Chat
               </button>
+              {onEdit && (
+                <button
+                  onClick={handleEditClick}
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                >
+                  <Edit className="w-4 h-4" />
+                  Edit
+                </button>
+              )}
               <button
                 onClick={handleDeleteClick}
                 className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
