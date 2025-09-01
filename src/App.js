@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { Toaster } from 'react-hot-toast';
 import AdminDashboard from './pages/AdminDashboard';
 import ChatInterface from './pages/ChatInterface';
+import ChatHistory from './pages/ChatHistory';
 import './App.css';
 
 function App() {
@@ -15,6 +16,9 @@ function App() {
           
           {/* Chat Interface Route */}
           <Route path="/chat/:agentId" element={<ChatInterface />} />
+          
+          {/* Chat History Route */}
+          <Route path="/admin/chat-history/:chatId" element={<ChatHistory />} />
           
           {/* Default redirect to admin */}
           <Route path="/" element={<Navigate to="/admin" replace />} />

@@ -508,6 +508,16 @@
   height: 44px;
 }
 
+.send-button .loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  margin-top: 14px;
+  border-top: 2px solid white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
 .send-button:hover:not(:disabled) {
   background: #2563eb;
 }
@@ -620,6 +630,7 @@
   border: 3px solid #e2e8f0;
   border-top: 3px solid #3b82f6;
   border-radius: 50%;
+  animation: spin 1s linear infinite;
 }
 
 /* Error States */

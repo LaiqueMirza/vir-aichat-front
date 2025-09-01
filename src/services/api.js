@@ -103,6 +103,13 @@ export const chatAPI = {
     return api.get(url);
   },
   
+  // Get chat history for message persistence (new endpoint)
+  getChatHistoryForPersistence: (chatId, limit = 50, offset = 0) => {
+    return api.get(`/chat/history/${chatId}`, {
+      params: { limit, offset }
+    });
+  },
+  
   // Send message (backend route: /chat/:agentId/message)
   sendMessage: (data) => {
     return api.post(`/chat/message`, data);
@@ -115,7 +122,10 @@ export const chatAPI = {
   deleteChat: (chatId) => api.delete(`/chat/session/${chatId}`),
   
   // Get recent chats across all agents (for admin dashboard)
-  getRecentChats: ({ limit = 20, offset = 0 } = {}) => api.get(`/chat/admin/recent?limit=${limit}&offset=${offset}`)
+  getRecentChats: ({ limit = 20, offset = 0 } = {}) => api.get(`/chat/admin/recent?limit=${limit}&offset=${offset}`),
+  
+  // Get chat logs for a specific chat
+  getChatLogs: (chatId, { limit = 100, offset = 0 } = {}) => api.get(`/chat/logs/${chatId}?limit=${limit}&offset=${offset}`)
 };
 
 // Lead API
@@ -139,7 +149,7 @@ export const leadAPI = {
   getById: (id) => api.get(`/leads/${id}`),
   
   // Create lead
-  create: (agentId, leadData) => api.post(`/leads/${agentId}`, leadData),
+  create: (agentId) => api.post(`/leads/${agentId}`),
   
   // Update lead
   update: (id, leadData) => api.put(`/leads/${id}`, leadData),

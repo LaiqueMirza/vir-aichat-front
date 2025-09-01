@@ -259,7 +259,25 @@
 /* Message Count */
 .message-count {
   text-align: center;
-  min-width: 80px;
+  min-width: 120px;
+  vertical-align: middle;
+}
+
+.view-chats-button {
+  padding: 6px 12px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  white-space: nowrap;
+}
+
+.view-chats-button:hover {
+  background: #2563eb;
 }
 
 .message-badge {
@@ -277,7 +295,11 @@
 /* Token Count */
 .token-count {
   text-align: center;
-  min-width: 90px;
+  min-width: 80px;
+  vertical-align: middle;
+  font-size: 14px;
+  font-weight: 600;
+  color: #8b5cf6;
 }
 
 .token-badge {
@@ -295,7 +317,11 @@
 /* Cost */
 .cost {
   text-align: center;
-  min-width: 100px;
+  min-width: 80px;
+  vertical-align: middle;
+  font-size: 14px;
+  font-weight: 600;
+  color: #10b981;
 }
 
 .cost-badge {

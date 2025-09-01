@@ -33,16 +33,45 @@ const ChatInterface = () => {
   const [chatId, setChatId] = useState(null);
   const [showFileUpload, setShowFileUpload] = useState(false);
   const [lastMessageId, setLastMessageId] = useState(null);
-  const [showLeadCapture, setShowLeadCapture] = useState(true);
-  const [leadCaptured, setLeadCaptured] = useState(false);
+  const [showLeadCapture, setShowLeadCapture] = useState(false);
+  const [leadCaptured, setLeadCaptured] = useState(true);
   const [isSubmittingLead, setIsSubmittingLead] = useState(false);
   const [isLoadingAgent, setIsLoadingAgent] = useState(false);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [agentError, setAgentError] = useState(null);
   const [chatError, setChatError] = useState(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const messageCache = useRef(new Map());
+  const debounceTimeoutRef = useRef(null);
+
+  // Generate or retrieve session ID
+  const getSessionId = useCallback(() => {
+    const sessionKey = `chat_session_${agentId}`;
+    let currentSessionId = sessionStorage.getItem(sessionKey);
+    
+    if (!currentSessionId) {
+      currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      sessionStorage.setItem(sessionKey, currentSessionId);
+    }
+    
+    return currentSessionId;
+  }, [agentId]);
+
+  // Check if this is the first load of the session
+  const isFirstLoad = useCallback(() => {
+    const firstLoadKey = `first_load_${agentId}`;
+    return !sessionStorage.getItem(firstLoadKey);
+  }, [agentId]);
+
+  // Mark first load as completed
+  const markFirstLoadCompleted = useCallback(() => {
+    const firstLoadKey = `first_load_${agentId}`;
+    sessionStorage.setItem(firstLoadKey, 'completed');
+  }, [agentId]);
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
@@ -112,25 +141,86 @@ const ChatInterface = () => {
     setInputMessage(e.target.value);
     
     if (chatId) {
-      // Clear existing timeout
+      // Debounce typing status updates
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+      
+      // Clear existing typing timeout
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
 
-      // Send typing status
-      chatAPI.updateTypingStatus(chatId, true);
+      // Debounced typing status update
+      debounceTimeoutRef.current = setTimeout(() => {
+        if (chatAPI.updateTypingStatus) {
+          chatAPI.updateTypingStatus(chatId, true);
+        }
+      }, 300); // 300ms debounce
 
       // Set timeout to stop typing
       typingTimeoutRef.current = setTimeout(() => {
-        chatAPI.updateTypingStatus(chatId, false);
+        if (chatAPI.updateTypingStatus) {
+          chatAPI.updateTypingStatus(chatId, false);
+        }
       }, 2000);
     }
   };
 
-  const handleLeadSubmit = async (leadData) => {
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Load chat history from backend
+  const loadChatHistory = useCallback(async (chatId, limit = 50, offset = 0) => {
+    if (!chatId) return { messages: [], hasMore: false };
+    
+    // Check cache first
+    const cacheKey = `${chatId}_${limit}_${offset}`;
+    if (messageCache.current.has(cacheKey)) {
+      return messageCache.current.get(cacheKey);
+    }
+    
+    try {
+      setIsLoadingHistory(true);
+      const response = await chatAPI.getChatHistoryForPersistence(chatId, limit, offset);
+      
+      if (response.data.success) {
+        const result = {
+          messages: response.data.data.messages || [],
+          hasMore: response.data.data.pagination?.hasMore || false,
+          total: response.data.data.pagination?.total || 0
+        };
+        
+        // Cache the result
+        messageCache.current.set(cacheKey, result);
+        
+        return result;
+      } else {
+        throw new Error(response.data.message || 'Failed to load chat history');
+      }
+    } catch (error) {
+      const errorInfo = handleApiError(error);
+      console.error('Failed to load chat history:', errorInfo.message);
+      toast.error(`Failed to load chat history: ${errorInfo.message}`);
+      return { messages: [], hasMore: false };
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }, []);
+
+  const handleLeadSubmit = async () => {
     setIsSubmittingLead(true);
     try {
-      const response = await leadAPI.create(agentId, leadData);
+      const response = await leadAPI.create(agentId);
       if (response.data.success) {
         setLeadCaptured(true);
         setShowLeadCapture(false);
@@ -138,6 +228,24 @@ const ChatInterface = () => {
         setAgent(response.data.agent);
         setChat(response.data.chat);
 				setLead(response.data.lead);
+        setChatId(response.data.chat.chat_id);
+        
+        // Load existing messages if chat exists
+        if (response.data.chat.chat_id) {
+          const historyResult = await loadChatHistory(response.data.chat.chat_id);
+          if (historyResult.messages.length > 0) {
+            // Transform backend messages to frontend format
+            const transformedMessages = historyResult.messages.map(msg => ({
+              id: msg.chat_log_id || Date.now() + Math.random(),
+              message: msg.message,
+              sender: msg.role === 'user' ? 'user' : 'assistant',
+              timestamp: msg.created_at,
+              chat_id: msg.chat_id
+            }));
+            setMessages(transformedMessages);
+          }
+        }
+        
         toast.success('Welcome! You can now start chatting.');
       } else {
         throw new Error(response.data.message || 'Failed to submit lead information');
@@ -150,6 +258,82 @@ const ChatInterface = () => {
       setIsSubmittingLead(false);
     }
   };
+
+  // Initialize session and handle first load logic
+  useEffect(() => {
+    if (agentId) {
+      // Initialize session ID
+      const currentSessionId = getSessionId();
+      setSessionId(currentSessionId);
+      
+      // Only call leadAPI.create on first load
+      if (isFirstLoad()) {
+        console.log('First load detected - calling leadAPI.create');
+        handleLeadSubmit().then(() => {
+          markFirstLoadCompleted();
+        }).catch((error) => {
+          console.error('Failed to handle first load:', error);
+          // Don't mark as completed if it failed
+        });
+      } else {
+        console.log('Subsequent load detected - skipping leadAPI.create');
+        // On subsequent loads, try to restore session data
+        const storedChatId = sessionStorage.getItem(`chat_id_${agentId}`);
+        const storedAgent = sessionStorage.getItem(`agent_${agentId}`);
+        const storedChat = sessionStorage.getItem(`chat_${agentId}`);
+        
+        if (storedChatId && storedAgent && storedChat) {
+          try {
+            setChatId(storedChatId);
+            setAgent(JSON.parse(storedAgent));
+            setChat(JSON.parse(storedChat));
+            setLeadCaptured(true);
+            
+            // Load chat history for the restored session
+            loadChatHistory(storedChatId).then((historyResult) => {
+              if (historyResult.messages.length > 0) {
+                const transformedMessages = historyResult.messages.map(msg => ({
+                  id: msg.chat_log_id || Date.now() + Math.random(),
+                  message: msg.message,
+                  sender: msg.role === 'user' ? 'user' : 'assistant',
+                  timestamp: msg.created_at,
+                  chat_id: msg.chat_id
+                }));
+                setMessages(transformedMessages);
+              }
+            });
+          } catch (error) {
+            console.error('Failed to restore session data:', error);
+            // If restoration fails, treat as first load
+            handleLeadSubmit().then(() => {
+              markFirstLoadCompleted();
+            });
+          }
+        } else {
+          // No stored data, treat as first load
+          handleLeadSubmit().then(() => {
+            markFirstLoadCompleted();
+          });
+        }
+      }
+    }
+  }, [agentId, getSessionId, isFirstLoad, markFirstLoadCompleted, loadChatHistory]);
+
+  // Store session data when chat/agent data changes
+  useEffect(() => {
+    if (agentId && chat.chat_id && agent.name) {
+      sessionStorage.setItem(`chat_id_${agentId}`, chat.chat_id);
+      sessionStorage.setItem(`agent_${agentId}`, JSON.stringify(agent));
+      sessionStorage.setItem(`chat_${agentId}`, JSON.stringify(chat));
+    }
+  }, [agentId, chat, agent]);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
 
   const formatMessageTime = (timestamp) => {
     return format(new Date(timestamp), 'HH:mm');
@@ -211,16 +395,7 @@ const ChatInterface = () => {
 
   return (
 		<div className="chat-container">
-			{/* Lead Capture Modal */}
-			{showLeadCapture && !leadCaptured && (
-				<LeadCaptureModal
-					isOpen={showLeadCapture}
-					onSubmit={handleLeadSubmit}
-					isLoading={isSubmittingLead}
-					agentName={agent.name}
-				/>
-			)}
-			{/* Main Chat Interface - Only show after lead capture */}
+			{/* Main Chat Interface */}
 			{isLoadingAgent ? (
 				<div className="loading-container">
 					<div className="loading-spinner"></div>
@@ -249,10 +424,10 @@ const ChatInterface = () => {
 
 					{/* Messages */}
 					<div className="chat-messages">
-						{isLoadingChat ? (
+						{isLoadingChat || isLoadingHistory ? (
 							<div className="loading-container">
 								<div className="loading-spinner"></div>
-								<p>Loading chat history...</p>
+								<p>{isLoadingHistory ? 'Loading chat history...' : 'Loading chat...'}</p>
 							</div>
 						) : messages.length === 0 ? (
 							<div className="text-center py-12">

@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { chatAPI } from '../services/api';
 import './ChatsTab.css';
 
 const ChatsTab = () => {
+  const navigate = useNavigate();
   const [chats, setChats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -142,147 +144,142 @@ const ChatsTab = () => {
   }
 
   return (
-    <div className="chats-tab">
-      <div className="chats-header">
-        <div className="chats-title">
-          <h2>Chat Conversations</h2>
-          <p className="chats-subtitle">
-            Showing {chats.length} of {totalChats} total conversations
-          </p>
-        </div>
-        <div className="chats-stats">
-          <div className="stat-item">
-            <span className="stat-label">Total Chats:</span>
-            <span className="stat-value">{totalChats}</span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-label">Page:</span>
-            <span className="stat-value">{currentPage} of {totalPages}</span>
-          </div>
-        </div>
-      </div>
+		<div className="chats-tab">
+			<div className="chats-header">
+				<div className="chats-title">
+					<h2>Chat Conversations</h2>
+					<p className="chats-subtitle">
+						Showing {chats.length} of {totalChats} total conversations
+					</p>
+				</div>
+				<div className="chats-stats">
+					<div className="stat-item">
+						<span className="stat-label">Total Chats:</span>
+						<span className="stat-value">{totalChats}</span>
+					</div>
+					<div className="stat-item">
+						<span className="stat-label">Page:</span>
+						<span className="stat-value">
+							{currentPage} of {totalPages}
+						</span>
+					</div>
+				</div>
+			</div>
 
-      <div className="chats-table-container">
-        <table className="chats-table">
-          <thead>
-            <tr>
-              <th>Client Info</th>
-              <th>Agent</th>
-              <th>Lead</th>
-              <th>Messages</th>
-              <th>Tokens</th>
-              <th>Cost</th>
-              <th>Duration</th>
-              <th>Status</th>
-              <th>Started</th>
-              <th>Last Activity</th>
-            </tr>
-          </thead>
-          <tbody>
-            {chats.map((chat) => (
-              <tr key={chat.chat_id} className="chat-row">
-                <td className="client-info">
-                  <div className="client-details">
-                    <div className="client-name">
-                      {chat.client_name || 'Anonymous'}
-                    </div>
-                    <div className="client-contact">
-                      {chat.client_email && (
-                        <div className="contact-item">
-                          📧 {chat.client_email}
-                        </div>
-                      )}
-                      {chat.client_phone && (
-                        <div className="contact-item">
-                          📞 {chat.client_phone}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </td>
-                
-                <td className="agent-info">
-                  <div className="agent-name">
-                    {chat.agent_name || 'Unassigned'}
-                  </div>
-                </td>
-                
-                <td className="lead-info">
-                  {chat.lead_id ? (
-                    <div className="lead-badge">
-                      🎯 Lead #{chat.lead_id}
-                    </div>
-                  ) : (
-                    <span className="no-lead">No Lead</span>
-                  )}
-                </td>
-                
-                <td className="message-count">
-                  <div className="message-badge">
-                    💬 {chat.message_count || 0}
-                  </div>
-                </td>
-                
-                <td className="token-count">
-                  <div className="token-badge">
-                    🔢 {chat.total_tokens ? chat.total_tokens.toLocaleString() : '0'}
-                  </div>
-                </td>
-                
-                <td className="cost">
-                  <div className="cost-badge">
-                    💰 ${chat.total_cost ? parseFloat(chat.total_cost).toFixed(4) : '0.0000'}
-                  </div>
-                </td>
-                
-                <td className="duration">
-                  {formatDuration(chat.created_at, chat.updated_at)}
-                </td>
-                
-                <td className="status">
-                  <span className={`status-badge ${getStatusBadgeClass(chat.status)}`}>
-                    {chat.status || 'Unknown'}
-                  </span>
-                </td>
-                
-                <td className="created-date">
-                  {formatDate(chat.created_at)}
-                </td>
-                
-                <td className="updated-date">
-                  {formatDate(chat.updated_at)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+			<div className="chats-table-container">
+				<table className="chats-table">
+					<thead>
+						<tr>
+							<th>Client Info</th>
+							<th>Agent</th>
+							<th>Lead</th>
+							<th>Messages</th>
+							<th>Tokens</th>
+							<th>Cost</th>
+							<th>Status</th>
+							<th>Started</th>
+						</tr>
+					</thead>
+					<tbody>
+						{chats.map((chat) => (
+							<tr key={chat.chat_id} className="chat-row">
+								<td className="client-info">
+									<div className="client-details">
+										<div className="client-name">
+											{chat.client_name || "Anonymous"}
+										</div>
+										<div className="client-contact">
+											{chat.client_email && (
+												<div className="contact-item">
+													📧 {chat.client_email}
+												</div>
+											)}
+											{chat.client_phone && (
+												<div className="contact-item">
+													📞 {chat.client_phone}
+												</div>
+											)}
+										</div>
+									</div>
+								</td>
 
-      {totalPages > 1 && (
-        <div className="pagination">
-          <button 
-            className="pagination-button" 
-            onClick={handlePrevPage}
-            disabled={currentPage === 1}
-          >
-            ← Previous
-          </button>
-          
-          <div className="pagination-info">
-            Page {currentPage} of {totalPages}
-          </div>
-          
-          <button 
-            className="pagination-button" 
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-          >
-            Next →
-          </button>
-        </div>
-      )}
-    </div>
-  );
+								<td className="agent-info">
+									<div className="agent-name">
+										{chat.agent_name || "Unassigned"}
+									</div>
+								</td>
+
+								<td className="lead-info">
+									{chat.lead_id ? (
+										<div className="lead-badge">🎯 Lead #{chat.lead_id}</div>
+									) : (
+										<span className="no-lead">No Lead</span>
+									)}
+								</td>
+
+								<td className="message-count">
+									<button
+										className="view-chats-button"
+										onClick={() =>
+                        window.open(`/admin/chat-history/${chat.chat_id}`, '_blank')
+										}
+										title="View complete chat history">
+										View Chats
+									</button>
+								</td>
+
+								<td className="token-count">
+									{chat.total_tokens
+										? chat.total_tokens.toLocaleString()
+										: "0"}
+								</td>
+
+								<td className="cost">
+									${chat.total_cost
+										? parseFloat(chat.total_cost).toFixed(4)
+										: "0.0000"}
+								</td>
+
+								<td className="status">
+									<span
+										className={`status-badge ${getStatusBadgeClass(
+											chat.status
+										)}`}>
+										{chat.status || "Unknown"}
+									</span>
+								</td>
+
+								<td className="created-date">{formatDate(chat.created_at)}</td>
+
+							</tr>
+						))}
+					</tbody>
+				</table>
+			</div>
+
+			{totalPages > 1 && (
+				<div className="pagination">
+					<button
+						className="pagination-button"
+						onClick={handlePrevPage}
+						disabled={currentPage === 1}>
+						← Previous
+					</button>
+
+					<div className="pagination-info">
+						Page {currentPage} of {totalPages}
+					</div>
+
+					<button
+						className="pagination-button"
+						onClick={handleNextPage}
+						disabled={currentPage === totalPages}>
+						Next →
+					</button>
+				</div>
+			)}
+		</div>
+	);
 };
 
 export default ChatsTab;
