@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
-  Send, 
-  Paperclip, 
-  MoreVertical, 
-  ArrowLeft,
-  Bot,
-  User,
-  Loader2
+	Send, 
+	Paperclip, 
+	MoreVertical, 
+	ArrowLeft,
+	Bot,
+	User,
+	Loader2,
+	Mic,
+	MicOff
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
@@ -42,6 +44,14 @@ const ChatInterface = () => {
   const [chatError, setChatError] = useState(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sessionId, setSessionId] = useState(null);
+  // Voice interaction states
+  const [isListening, setIsListening] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
+  const [speechRecognition, setSpeechRecognition] = useState(null);
+  const [isVoiceSupported, setIsVoiceSupported] = useState(false);
+  const [isManualStop, setIsManualStop] = useState(false);
+  const [isVoiceMode, setIsVoiceMode] = useState(false);
+  const currentTranscriptRef = useRef('');
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -78,7 +88,7 @@ const ChatInterface = () => {
     const messageText = inputMessage.trim();
     setInputMessage('');
     setIsLoading(true);
-
+    
     const userMessage = {
 			id: Date.now(),
 			message: messageText,
@@ -97,6 +107,7 @@ const ChatInterface = () => {
 				chat_id: chat.chat_id,
 				agent_id: agentId,
 				sender: "user",
+				requestAudio: isVoiceMode
 			});
 
       if (response.data?.data?.response) {
@@ -108,17 +119,57 @@ const ChatInterface = () => {
         };
         setMessages(prev => [...prev, assistantMessage]);
         setLastMessageId(assistantMessage.id);
+        
+        // Play audio response if available
+        if (isVoiceMode && response.data?.data?.audio) {
+          await playAudioResponse(response.data.data.audio);
+        } else if (isVoiceMode) {
+          // Fallback if no audio data received
+          setIsProcessingVoice(false);
+          toast.error('Audio response not available, but text response is shown.');
+        }
+        
+        // Reset voice mode after API response
+        setIsVoiceMode(false);
       }
     } catch (error) {
       const errorInfo = handleApiError(error);
-      toast.error(`Failed to send message: ${errorInfo.message}`);
+      console.error('Message send error:', error);
+      
+      // Enhanced error handling for different types of failures
+      let errorMessage = 'Failed to send message';
+      
+      if (error.response?.status === 429) {
+        errorMessage = 'Rate limit exceeded. Please wait a moment before trying again.';
+      } else if (error.response?.status === 503) {
+        errorMessage = 'Service temporarily unavailable. Please try again later.';
+      } else if (error.response?.status >= 500) {
+        errorMessage = 'Server error occurred. Please try again.';
+      } else if (error.code === 'NETWORK_ERROR' || !navigator.onLine) {
+        errorMessage = 'Network connection lost. Please check your internet connection.';
+      } else if (isVoiceMode && error.response?.data?.message?.includes('ElevenLabs')) {
+        errorMessage = 'Voice synthesis service is temporarily unavailable. Your message was processed but audio could not be generated.';
+      } else if (isVoiceMode && error.response?.data?.message?.includes('audio')) {
+        errorMessage = 'Audio generation failed. Your message was processed successfully.';
+      } else {
+        errorMessage = errorInfo.message || 'An unexpected error occurred';
+      }
+      
+      toast.error(errorMessage);
+      
+      if (isVoiceMode) {
+        setIsProcessingVoice(false);
+      }
+      
+      // Reset voice mode after error
+      setIsVoiceMode(false);
       
       // Remove the failed user message and add an error message
       setMessages(prev => {
         const filtered = prev.filter(msg => msg.id !== userMessage.id);
         return [...filtered, {
           id: Date.now() + 2,
-          message: `❌ Failed to send message: ${errorInfo.message}. Please try again.`,
+          message: `❌ ${errorMessage} Please try again.`,
           sender: 'system',
           timestamp: new Date().toISOString(),
           chat_id: chatId,
@@ -127,15 +178,148 @@ const ChatInterface = () => {
       });
     } finally {
       setIsLoading(false);
+      if (isVoiceMode) {
+        setIsProcessingVoice(false);
+      }
+      // Reset voice mode in finally block as well
+      setIsVoiceMode(false);
     }
   };
 
   const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
-  };
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			handleSendMessage();
+		}
+	};
+
+	// Voice interaction handlers
+	const handleVoiceToggle = async () => {
+		if (!isVoiceSupported) {
+			toast.error('Voice recognition is not supported in your browser. Please use Chrome, Edge, or Safari.');
+			return;
+		}
+
+		if (isListening) {
+			// Stop listening
+			if (speechRecognition) {
+				setIsManualStop(true);
+				setIsProcessingVoice(false); // Immediately clear processing state
+				setIsVoiceMode(false); // Reset voice mode on manual stop
+				speechRecognition.stop();
+			}
+		} else {
+			// Check microphone permissions before starting
+			try {
+				if (navigator.permissions) {
+					const permission = await navigator.permissions.query({ name: 'microphone' });
+					if (permission.state === 'denied') {
+						toast.error('Microphone access is blocked. Please enable microphone permissions in your browser settings.');
+						return;
+					}
+				}
+				
+				// Test microphone access
+				if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+					try {
+						const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+						// Stop the test stream immediately
+						stream.getTracks().forEach(track => track.stop());
+					} catch (micError) {
+						console.error('Microphone access error:', micError);
+						if (micError.name === 'NotAllowedError') {
+							toast.error('Microphone access denied. Please allow microphone access and try again.');
+						} else if (micError.name === 'NotFoundError') {
+							toast.error('No microphone found. Please connect a microphone and try again.');
+						} else {
+							toast.error('Unable to access microphone. Please check your microphone settings.');
+						}
+						return;
+					}
+				}
+				
+				// Start listening
+				if (speechRecognition) {
+					setInputMessage(''); // Clear input before starting
+					setIsManualStop(false); // Reset manual stop flag
+					setIsProcessingVoice(false); // Clear any previous processing state
+					speechRecognition.start();
+				}
+			} catch (error) {
+				console.error('Failed to start speech recognition:', error);
+				toast.error('Failed to start voice recognition. Please try again.');
+			}
+		}
+	};
+
+	const playAudioResponse = async (base64AudioData) => {
+		try {
+			if (!base64AudioData) {
+				throw new Error('No audio data provided');
+			}
+
+			console.log('🎵 Playing audio response');
+			
+			// Convert base64 to blob
+			const binaryString = atob(base64AudioData);
+			const bytes = new Uint8Array(binaryString.length);
+			for (let i = 0; i < binaryString.length; i++) {
+				bytes[i] = binaryString.charCodeAt(i);
+			}
+			
+			if (bytes.length === 0) {
+				throw new Error('Empty audio data received');
+			}
+			
+			const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+			const audioUrl = URL.createObjectURL(audioBlob);
+			const audio = new Audio(audioUrl);
+			
+			audio.onloadstart = () => {
+				console.log('🎵 Audio loading started');
+			};
+			
+			audio.oncanplay = () => {
+				console.log('🎵 Audio ready to play');
+			};
+			
+			audio.onended = () => {
+				console.log('✅ Audio playback completed');
+				URL.revokeObjectURL(audioUrl);
+				setIsProcessingVoice(false);
+				setIsVoiceMode(false); // Reset voice mode after audio playback
+			};
+			
+			audio.onerror = (e) => {
+				console.error('❌ Audio playback error:', e);
+				URL.revokeObjectURL(audioUrl);
+				setIsProcessingVoice(false);
+				setIsVoiceMode(false); // Reset voice mode on audio error
+				toast.error('Failed to play audio response. Please check your audio settings.');
+			};
+			
+			// Set volume and play
+			audio.volume = 0.8;
+			await audio.play();
+			
+		} catch (error) {
+			console.error('❌ Error playing audio:', error);
+			setIsProcessingVoice(false);
+			setIsVoiceMode(false); // Reset voice mode on audio error
+			
+			if (error.name === 'NotAllowedError') {
+				toast.error('Audio playback blocked. Please allow audio autoplay in your browser.');
+			} else if (error.name === 'NotSupportedError') {
+				toast.error('Audio format not supported by your browser.');
+			} else if (error.message.includes('No audio data')) {
+				toast.error('No audio response received from server.');
+			} else if (error.message.includes('Empty audio data')) {
+				toast.error('Empty audio response received.');
+			} else {
+				toast.error('Failed to play audio response.');
+			}
+		}
+	};
 
   const handleInputChange = (e) => {
     setInputMessage(e.target.value);
@@ -328,6 +512,94 @@ const ChatInterface = () => {
     }
   }, [agentId, chat, agent]);
 
+  // Initialize speech recognition
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+      
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+      
+      recognition.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map(result => result[0].transcript)
+          .join('');
+        
+        currentTranscriptRef.current = transcript;
+        setInputMessage(transcript);
+      };
+      
+      recognition.onend = () => {
+        setIsListening(false);
+        
+        // Check if this was a manual stop
+        if (isManualStop) {
+          setIsManualStop(false);
+          setIsProcessingVoice(false);
+          currentTranscriptRef.current = '';
+          return;
+        }
+        
+        // Use the ref value which contains the latest transcript
+        const finalTranscript = currentTranscriptRef.current.trim();
+        if (finalTranscript) {
+          // Set voice mode to true for voice messages
+          setIsVoiceMode(true);
+          // Only set processing state for automatic stops with transcript
+          // Don't show loader for manual stops
+          // setIsProcessingVoice(true);
+          // handleSendMessage(); // No parameter needed now
+        }
+        setIsProcessingVoice(false);
+        // Clear the transcript ref
+        currentTranscriptRef.current = '';
+      };
+      
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        setIsListening(false);
+        setIsProcessingVoice(false);
+        setIsVoiceMode(false); // Reset voice mode on speech recognition error
+        
+        switch (event.error) {
+          case 'not-allowed':
+            toast.error('Microphone access denied. Please enable microphone permissions in your browser settings.');
+            break;
+          case 'no-speech':
+            toast.error('No speech detected. Please try speaking again.');
+            break;
+          case 'audio-capture':
+            toast.error('Microphone not found or not working. Please check your microphone.');
+            break;
+          case 'network':
+            toast.error('Network error occurred. Please check your internet connection.');
+            break;
+          case 'aborted':
+            // Don't show error for user-initiated stops
+            break;
+          case 'service-not-allowed':
+            toast.error('Speech recognition service not allowed. Please try again.');
+            break;
+          default:
+            toast.error(`Speech recognition failed: ${event.error}. Please try again.`);
+        }
+      };
+      
+      setSpeechRecognition(recognition);
+      setIsVoiceSupported(true);
+    } else {
+      setIsVoiceSupported(false);
+      console.warn('Speech recognition not supported in this browser');
+      toast.error('Voice recognition is not supported in your browser. Please use a modern browser like Chrome or Edge.');
+    }
+  }, []);
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -459,11 +731,37 @@ const ChatInterface = () => {
 								placeholder={`Message ${agent.name}...`}
 								className="chat-input"
 								rows={1}
-								disabled={isLoading}
+								disabled={isLoading || isListening}
 							/>
+							{isVoiceSupported && (
+								<div className="voice-input-container">
+									<button
+										onClick={handleVoiceToggle}
+										disabled={isLoading || (isProcessingVoice && !isManualStop)}
+									className={`voice-button ${
+										isListening ? 'listening' : (isProcessingVoice && !isManualStop) ? 'processing' : 'idle'
+									}`}
+										title={isListening ? 'Stop recording' : 'Start voice input'}
+									>
+										{(isProcessingVoice && !isManualStop) ? (
+												<Loader2 className="w-5 h-5 loading-spinner" />
+											) : isListening ? (
+												<MicOff className="w-5 h-5" />
+											) : (
+												<Mic className="w-5 h-5" />
+											)}
+									</button>
+									{isListening && (
+										<div className="recording-indicator">
+											<div className="recording-dot"></div>
+											<span className="recording-text">Recording...</span>
+										</div>
+									)}
+								</div>
+							)}
 							<button
 								onClick={handleSendMessage}
-								disabled={!inputMessage.trim() || isLoading}
+								disabled={!inputMessage.trim() || isLoading || isListening}
 								className="send-button">
 								{isLoading ? (
 									<Loader2 className="w-5 h-5 loading-spinner" />

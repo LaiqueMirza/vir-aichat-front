@@ -508,6 +508,148 @@
   height: 44px;
 }
 
+.voice-input-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.voice-button {
+  padding: 0.75rem;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  min-width: 44px;
+  height: 44px;
+}
+
+.voice-button.idle {
+  background: #6b7280;
+  color: white;
+}
+
+.voice-button.idle:hover {
+  background: #4b5563;
+}
+
+.voice-button.listening {
+  background: #dc2626;
+  color: white;
+  animation: recording-pulse 1s infinite, recording-glow 2s infinite;
+  box-shadow: 0 0 20px rgba(220, 38, 38, 0.5);
+  transform: scale(1.05);
+}
+
+.voice-button.processing {
+  background: #f59e0b;
+  color: white;
+  animation: processing-spin 1.5s infinite;
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.4);
+}
+
+.voice-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Enhanced recording animation */
+@keyframes recording-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.1);
+  }
+}
+
+/* Glowing effect for recording */
+@keyframes recording-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(220, 38, 38, 0.5), 0 0 40px rgba(220, 38, 38, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(220, 38, 38, 0.8), 0 0 60px rgba(220, 38, 38, 0.4);
+  }
+}
+
+/* Processing animation */
+@keyframes processing-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Recording indicator styles */
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(220, 38, 38, 0.1);
+  padding: 0.5rem 0.75rem;
+  border-radius: 20px;
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  animation: fade-in 0.3s ease-in;
+}
+
+.recording-dot {
+  width: 8px;
+  height: 8px;
+  background: #dc2626;
+  border-radius: 50%;
+  animation: recording-blink 1s infinite;
+}
+
+.recording-text {
+  font-size: 0.875rem;
+  color: #dc2626;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Recording dot animation */
+@keyframes recording-blink {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+}
+
+/* Fade in animation for recording indicator */
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Legacy pulse animation for backward compatibility */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
 .send-button .loading-spinner {
   width: 20px;
   height: 20px;
