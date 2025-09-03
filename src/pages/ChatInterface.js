@@ -51,7 +51,9 @@ const ChatInterface = () => {
   const [isVoiceSupported, setIsVoiceSupported] = useState(false);
   const [isManualStop, setIsManualStop] = useState(false);
   const [isVoiceMode, setIsVoiceMode] = useState(false);
-  const currentTranscriptRef = useRef('');
+  const [speechHistory, setSpeechHistory] = useState([]);
+  
+
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -87,6 +89,7 @@ const ChatInterface = () => {
     if (!inputMessage.trim() || isLoading) return;
     const messageText = inputMessage.trim();
     setInputMessage('');
+    setSpeechHistory([]);
     setIsLoading(true);
     
     const userMessage = {
@@ -129,8 +132,12 @@ const ChatInterface = () => {
           toast.error('Audio response not available, but text response is shown.');
         }
         
-        // Reset voice mode after API response
+        // Reset voice mode when message is sent
         setIsVoiceMode(false);
+        
+        // Clear input field after successful response
+        setInputMessage('');
+        setSpeechHistory([]);
       }
     } catch (error) {
       const errorInfo = handleApiError(error);
@@ -181,8 +188,12 @@ const ChatInterface = () => {
       if (isVoiceMode) {
         setIsProcessingVoice(false);
       }
-      // Reset voice mode in finally block as well
+      // Reset voice mode in finally block
       setIsVoiceMode(false);
+      
+      // Ensure input is cleared after API call completes
+      setInputMessage('');
+      setSpeechHistory([]);
     }
   };
 
@@ -204,8 +215,8 @@ const ChatInterface = () => {
 			// Stop listening
 			if (speechRecognition) {
 				setIsManualStop(true);
-				setIsProcessingVoice(false); // Immediately clear processing state
-				setIsVoiceMode(false); // Reset voice mode on manual stop
+				setIsProcessingVoice(false);
+				// Keep isVoiceMode true until API response
 				speechRecognition.stop();
 			}
 		} else {
@@ -238,11 +249,18 @@ const ChatInterface = () => {
 					}
 				}
 				
-				// Start listening
+				// Start listening - preserve existing text
 				if (speechRecognition) {
-					setInputMessage(''); // Clear input before starting
-					setIsManualStop(false); // Reset manual stop flag
-					setIsProcessingVoice(false); // Clear any previous processing state
+					// Preserve existing input text by adding it to speech history
+					const existingText = inputMessage.trim();
+					if (existingText) {
+						setSpeechHistory([existingText]);
+					} else {
+						setSpeechHistory([]);
+					}
+					setIsManualStop(false);
+					setIsProcessingVoice(false);
+					setIsVoiceMode(true);
 					speechRecognition.start();
 				}
 			} catch (error) {
@@ -287,14 +305,14 @@ const ChatInterface = () => {
 				console.log('✅ Audio playback completed');
 				URL.revokeObjectURL(audioUrl);
 				setIsProcessingVoice(false);
-				setIsVoiceMode(false); // Reset voice mode after audio playback
+				// isVoiceMode will be reset by API response handler
 			};
 			
 			audio.onerror = (e) => {
 				console.error('❌ Audio playback error:', e);
 				URL.revokeObjectURL(audioUrl);
 				setIsProcessingVoice(false);
-				setIsVoiceMode(false); // Reset voice mode on audio error
+				// isVoiceMode will be reset by API response handler
 				toast.error('Failed to play audio response. Please check your audio settings.');
 			};
 			
@@ -305,7 +323,7 @@ const ChatInterface = () => {
 		} catch (error) {
 			console.error('❌ Error playing audio:', error);
 			setIsProcessingVoice(false);
-			setIsVoiceMode(false); // Reset voice mode on audio error
+			// isVoiceMode will be reset by API response handler
 			
 			if (error.name === 'NotAllowedError') {
 				toast.error('Audio playback blocked. Please allow audio autoplay in your browser.');
@@ -518,21 +536,65 @@ const ChatInterface = () => {
     
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
-      recognition.continuous = false;
+      recognition.continuous = true;
       recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
       recognition.lang = 'en-US';
+      
+      // Optimize for smoother speech recognition
+      if ('webkitSpeechRecognition' in window) {
+        recognition.webkitSpeechRecognition = true;
+      }
+      
+      // Reduce audio processing delays
+      try {
+        recognition.serviceURI = recognition.serviceURI || '';
+      } catch (e) {
+        // Ignore if not supported
+      }
       
       recognition.onstart = () => {
         setIsListening(true);
       };
       
       recognition.onresult = (event) => {
-        const transcript = Array.from(event.results)
-          .map(result => result[0].transcript)
-          .join('');
-        
-        currentTranscriptRef.current = transcript;
-        setInputMessage(transcript);
+        if (event.results) {
+          let finalTranscript = '';
+          let interimTranscript = '';
+          
+          // Process all results from the current event
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              finalTranscript += transcript;
+            } else {
+              interimTranscript += transcript;
+            }
+          }
+          
+          // Update speech history with final results only
+          if (finalTranscript) {
+            const trimmedTranscript = finalTranscript.trim();
+            if (trimmedTranscript) {
+              setSpeechHistory(prev => {
+                const newHistory = [...prev, trimmedTranscript];
+                // Update input message with complete history
+                const combinedText = newHistory.join(' ');
+                setInputMessage(combinedText);
+                return newHistory;
+              });
+            }
+          } else if (interimTranscript) {
+            // For interim results, combine existing history with current interim
+            setSpeechHistory(currentHistory => {
+              const combinedText = currentHistory.length > 0 
+                ? currentHistory.join(' ') + ' ' + interimTranscript.trim()
+                : interimTranscript.trim();
+              setInputMessage(combinedText);
+              return currentHistory; // Don't modify history for interim results
+            });
+          }
+        }
       };
       
       recognition.onend = () => {
@@ -542,43 +604,56 @@ const ChatInterface = () => {
         if (isManualStop) {
           setIsManualStop(false);
           setIsProcessingVoice(false);
-          currentTranscriptRef.current = '';
+          // Keep isVoiceMode true until API response
+          // Preserve input text when manually stopping microphone
           return;
         }
         
-        // Use the ref value which contains the latest transcript
-        const finalTranscript = currentTranscriptRef.current.trim();
-        if (finalTranscript) {
-          // Set voice mode to true for voice messages
-          setIsVoiceMode(true);
-          // Only set processing state for automatic stops with transcript
-          // Don't show loader for manual stops
-          // setIsProcessingVoice(true);
-          // handleSendMessage(); // No parameter needed now
+        // Restart recognition automatically to keep microphone active
+        // unless user explicitly stopped it
+        if (!isManualStop && speechRecognition && isVoiceMode) {
+          try {
+            setTimeout(() => {
+              if (!isManualStop && speechRecognition && isVoiceMode) {
+                speechRecognition.start();
+              }
+            }, 100); // Small delay to prevent rapid restart issues
+          } catch (error) {
+            console.error('Failed to restart speech recognition:', error);
+            setIsProcessingVoice(false);
+            // Keep isVoiceMode true until API response
+          }
+        } else {
+          setIsProcessingVoice(false);
+          // Keep isVoiceMode true until API response
         }
-        setIsProcessingVoice(false);
-        // Clear the transcript ref
-        currentTranscriptRef.current = '';
       };
       
       recognition.onerror = (event) => {
         console.error('Speech recognition error:', event.error);
         setIsListening(false);
         setIsProcessingVoice(false);
-        setIsVoiceMode(false); // Reset voice mode on speech recognition error
+        
+        // Only reset voice mode for serious errors, not recoverable ones
+        const seriousErrors = ['not-allowed', 'audio-capture', 'service-not-allowed'];
+        if (seriousErrors.includes(event.error)) {
+          setIsVoiceMode(false);
+        }
         
         switch (event.error) {
           case 'not-allowed':
             toast.error('Microphone access denied. Please enable microphone permissions in your browser settings.');
             break;
           case 'no-speech':
-            toast.error('No speech detected. Please try speaking again.');
+            // Don't show error for no speech - this is normal and recoverable
+            console.log('No speech detected, continuing to listen...');
             break;
           case 'audio-capture':
             toast.error('Microphone not found or not working. Please check your microphone.');
             break;
           case 'network':
             toast.error('Network error occurred. Please check your internet connection.');
+            // Network errors are recoverable, don't reset voice mode
             break;
           case 'aborted':
             // Don't show error for user-initiated stops
@@ -588,6 +663,7 @@ const ChatInterface = () => {
             break;
           default:
             toast.error(`Speech recognition failed: ${event.error}. Please try again.`);
+            // Keep isVoiceMode true for unknown errors until API response
         }
       };
       
