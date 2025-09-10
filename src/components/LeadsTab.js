@@ -145,7 +145,7 @@ const LeadsTab = () => {
                   <th>Lead Info</th>
                   <th>Agent</th>
                   <th>Status</th>
-                  <th>Chats</th>
+                  
                   <th>Created</th>
                   <th>Follow Up</th>
                 </tr>
@@ -182,11 +182,7 @@ const LeadsTab = () => {
                         {lead.status || 'Unknown'}
                       </span>
                     </td>
-                    <td className="chat-count">
-                      <div className="chat-badge">
-                        💬 {lead.chat_count || 0}
-                      </div>
-                    </td>
+                    
                     <td className="created-date">
                       {formatDate(lead.created_at)}
                     </td>
