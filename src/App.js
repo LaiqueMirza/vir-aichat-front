@@ -4,6 +4,7 @@ import { Toaster } from 'react-hot-toast';
 import AdminDashboard from './pages/AdminDashboard';
 import ChatInterface from './pages/ChatInterface';
 import ChatHistory from './pages/ChatHistory';
+import WebSocketTest from './components/WebSocketTest';
 import './App.css';
 
 function App() {
@@ -11,6 +12,9 @@ function App() {
     <div className="App">
       <Router>
         <Routes>
+          {/* WebSocket Test Route */}
+          <Route path="/websocket-test" element={<WebSocketTest />} />
+          
           {/* Admin Dashboard Route */}
           <Route path="/admin" element={<AdminDashboard />} />
           

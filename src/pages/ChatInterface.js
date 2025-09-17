@@ -6,6 +6,7 @@ import { format } from "date-fns";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { chatAPI, leadAPI, handleApiError } from "../services/api";
+import websocketService from "../services/websocketService";
 
 const ChatInterface = () => {
 	const { agentId } = useParams();
@@ -27,15 +28,306 @@ const ChatInterface = () => {
 	const [transcript, setTranscript] = useState("");
 	const [showMicPopover, setShowMicPopover] = useState(false);
 	const [micState, setMicState] = useState('idle'); // 'idle', 'listening', 'speaking'
+	
+	// WebSocket and streaming states
+	const [streamingResponse, setStreamingResponse] = useState("");
+	const [isWebSocketConnected, setIsWebSocketConnected] = useState(false);
+	
+	// Refs
 	const silenceTimerRef = useRef(null);
 	const transcriptRef = useRef("");
 	const isVoiceModeRef = useRef(isVoiceMode);
 	const currentAudioRef = useRef(null);
+	const streamingResponseRef = useRef("");
 
 	useEffect(() => {
 		transcriptRef.current = transcript;
 		isVoiceModeRef.current = isVoiceMode;
-	}, [transcript, isVoiceMode]);
+		streamingResponseRef.current = streamingResponse;
+
+		// Debug log to track streaming response changes
+		if (streamingResponse) {
+			console.log(
+				"🔄 Streaming response updated:",
+				streamingResponse.length,
+				"characters"
+			);
+		}
+	}, [transcript, isVoiceMode, streamingResponse]);
+	// Audio playback function for WebSocket responses
+	const playAudioResponse = useCallback(async (base64AudioData) => {
+		try {
+			if (!base64AudioData) {
+				throw new Error("No audio data provided");
+			}
+
+			console.log("🎵 Playing audio response");
+
+			const binaryString = atob(base64AudioData);
+			const bytes = new Uint8Array(binaryString.length);
+			for (let i = 0; i < binaryString.length; i++) {
+				bytes[i] = binaryString.charCodeAt(i);
+			}
+
+			if (bytes.length === 0) {
+				throw new Error("Empty audio data received");
+			}
+
+			const audioBlob = new Blob([bytes], { type: "audio/mpeg" });
+			const audioUrl = URL.createObjectURL(audioBlob);
+			const audio = new Audio(audioUrl);
+
+			audio.onloadstart = () => console.log("🎵 Audio loading started");
+			audio.oncanplay = () => console.log("🎵 Audio ready to play");
+			audio.onended = () => {
+				console.log("✅ Audio playback completed");
+				URL.revokeObjectURL(audioUrl);
+				currentAudioRef.current = null;
+				// Return to idle state when audio ends
+				if (isVoiceModeRef.current) {
+					setMicState("idle");
+				}
+			};
+			audio.onerror = (e) => {
+				console.error("❌ Audio playback error:", e);
+				URL.revokeObjectURL(audioUrl);
+				currentAudioRef.current = null;
+				toast.error(
+					"Failed to play audio response. Please check your audio settings."
+				);
+			};
+
+			audio.volume = 0.8;
+			currentAudioRef.current = audio;
+			await audio.play();
+		} catch (error) {
+			console.error("❌ Error playing audio:", error);
+			currentAudioRef.current = null;
+
+			if (error.name === "NotAllowedError") {
+				toast.error(
+					"Audio playback blocked. Please allow audio autoplay in your browser."
+				);
+			} else if (error.name === "NotSupportedError") {
+				toast.error("Audio format not supported by your browser.");
+			} else if (error.message.includes("No audio data")) {
+				toast.error("No audio response received from server.");
+			} else if (error.message.includes("Empty audio data")) {
+				toast.error("Empty audio response received.");
+			} else {
+				toast.error("Failed to play audio response.");
+			}
+		}
+	}, []);
+
+	// Initialize WebSocket connection
+	useEffect(() => {
+		if (agentId) {
+			// Connect to WebSocket server
+			websocketService.connect();
+
+			// Set up WebSocket event handlers
+			const handleConnected = () => {
+				console.log("✅ WebSocket connected for chat");
+				setIsWebSocketConnected(true);
+			};
+
+			const handleDisconnected = () => {
+				console.log("🔌 WebSocket disconnected");
+				setIsWebSocketConnected(false);
+			};
+
+			const handleTextChunk = (data) => {
+				console.log("📝 Received text chunk:", data.chunk);
+				// Update streaming response in real-time
+				setStreamingResponse((prev) => {
+					console.log("📝 Previous streamingResponse length:", prev.length);
+					const newResponse = prev + data.chunk;
+					console.log(
+						"📝 Updated streamingResponse length:",
+						newResponse.length
+					);
+					return newResponse;
+				});
+			};
+
+			const handleAudioChunk = (data) => {
+				console.log(
+					"🎵 Received audio chunk:",
+					data.audioData?.length || 0,
+					"bytes"
+				);
+				// Audio chunks are automatically played by the websocketService
+				// Set mic state to indicate audio is playing
+				setMicState("speaking");
+			};
+
+			const handleMessageAudioChunk = async (data) => {
+				// Always try to play audio if available, regardless of voice mode for testing
+				if (data.success && data.data?.audio) {
+					try {
+						// Stop any currently playing audio first
+						if (currentAudioRef.current ) {
+							console.log(
+								"🔇 [ChatInterface] Stopping current audio to play new chunk"
+							);
+							currentAudioRef.current.pause();
+							currentAudioRef.current = null;
+						}
+
+						// Set mic state to indicate audio is playing
+						setMicState("speaking");
+
+						// Play the audio chunk immediately
+						await playAudioResponse(data.data.audio);
+
+						console.log("✅ [ChatInterface] Audio chunk played successfully");
+
+						// Also add the text to streaming response for visual feedback
+						if (data.data.text) {
+							setStreamingResponse((prev) => {
+								const newResponse = prev + data.data.text;
+								console.log(
+									"📝 [ChatInterface] Updated streamingResponse with audio text:",
+									newResponse.length
+								);
+								return newResponse;
+							});
+						}
+					} catch (error) {
+						console.error(
+							"❌ [ChatInterface] Error details:",
+							error.name,
+							error.message
+						);
+
+						// Fall back to text streaming if audio fails
+						if (data.data.text) {
+							setStreamingResponse((prev) => prev + data.data.text);
+						}
+
+						// Reset mic state on error
+						setMicState("idle");
+					}
+				} else if (data.data?.text) {
+					// If no audio, just update streaming text
+					console.log("📝 [ChatInterface] No audio data, updating text only");
+					setStreamingResponse((prev) => prev + data.data.text);
+				} else {
+					console.warn(
+						"⚠️ [ChatInterface] Received audio chunk with no usable data:",
+						data
+					);
+				}
+			};
+
+			const handleMessageComplete = (data) => {
+				console.log("✅ Message streaming complete");
+				// Add the complete streamed message to messages using the current streaming response
+				const currentStreamingResponse = streamingResponseRef.current;
+				if (currentStreamingResponse.trim()) {
+					const assistantMessage = {
+						id: Date.now() + 1,
+						message: currentStreamingResponse,
+						sender: "assistant",
+						timestamp: new Date().toISOString(),
+					};
+					setMessages((prev) => [...prev, assistantMessage]);
+				}
+				setStreamingResponse(""); // Clear streaming response
+				setIsLoading(false);
+			};
+
+			const handleAudioComplete = () => {
+				console.log("🎵 Audio streaming complete");
+				setMicState("idle");
+			};
+
+			const handleError = (data) => {
+				console.error("❌ WebSocket error:", data.error);
+				toast.error("Connection error occurred");
+				setIsLoading(false);
+			};
+
+			const handleMessageResponse = async (data) => {
+				console.log("📨 Received final message response:", data);
+				setIsLoading(false);
+
+				if (data.success && data.data?.response) {
+					// Clear streaming response since we're finalizing the message
+					setStreamingResponse("");
+
+					const assistantMessage = {
+						id: Date.now() + 1,
+						message: data.data.response,
+						sender: "assistant",
+						timestamp: new Date().toISOString(),
+					};
+					setMessages((prev) => [...prev, assistantMessage]);
+
+					// // Play audio response if available and in voice mode
+					// if (isVoiceModeRef.current && data.data?.audio) {
+					// 	try {
+					// 		await playAudioResponse(data.data.audio);
+					// 	} catch (error) {
+					// 		console.error("❌ Failed to play audio response:", error);
+					// 		toast.error("Failed to play audio response");
+					// 	}
+					// } else if (isVoiceModeRef.current) {
+					// 	toast.error(
+					// 		"Audio response not available, but text response is shown."
+					// 	);
+					// }
+				} else {
+					toast.error("Failed to get response from AI");
+					// Clear streaming response on error
+					setStreamingResponse("");
+				}
+
+				// Reset mic state after processing response
+				setMicState("idle");
+			};
+
+			const handleMessageChunkResponse = (data) => {
+				console.log("📨 Received message chunk response:", data.data.response);
+
+				if (data.success && data.data?.response) {
+					// Update streaming response with the chunk
+					setStreamingResponse((prev) => prev + data.data.response);
+				}
+			};
+
+			// Register event handlers
+			websocketService.on("connected", handleConnected);
+			websocketService.on("disconnected", handleDisconnected);
+			websocketService.on("textChunk", handleTextChunk);
+			websocketService.on("audioChunk", handleAudioChunk);
+			websocketService.on("messageComplete", handleMessageComplete);
+			websocketService.on("audioComplete", handleAudioComplete);
+			websocketService.on("messageResponse", handleMessageResponse);
+			websocketService.on("messageChunkResponse", handleMessageChunkResponse);
+			websocketService.on("messageAudioChunk", handleMessageAudioChunk);
+			websocketService.on("error", handleError);
+
+			// Cleanup on unmount
+			return () => {
+				websocketService.off("connected", handleConnected);
+				websocketService.off("disconnected", handleDisconnected);
+				websocketService.off("textChunk", handleTextChunk);
+				websocketService.off("audioChunk", handleAudioChunk);
+				websocketService.off("messageComplete", handleMessageComplete);
+				websocketService.off("audioComplete", handleAudioComplete);
+				websocketService.off("messageResponse", handleMessageResponse);
+				websocketService.off(
+					"messageChunkResponse",
+					handleMessageChunkResponse
+				);
+				websocketService.off("messageAudioChunk", handleMessageAudioChunk);
+				websocketService.off("error", handleError);
+				websocketService.disconnect();
+			};
+		}
+	}, [agentId, playAudioResponse]);
 
 	const messagesEndRef = useRef(null);
 	const inputRef = useRef(null);
@@ -60,71 +352,6 @@ const ChatInterface = () => {
 		async (messageText, voiceMode = false) => {
 			if (!messageText.trim() || isLoading) return;
 
-			const playAudioResponse = async (base64AudioData) => {
-				try {
-					if (!base64AudioData) {
-						throw new Error("No audio data provided");
-					}
-
-					console.log("🎵 Playing audio response");
-
-					const binaryString = atob(base64AudioData);
-					const bytes = new Uint8Array(binaryString.length);
-					for (let i = 0; i < binaryString.length; i++) {
-						bytes[i] = binaryString.charCodeAt(i);
-					}
-
-					if (bytes.length === 0) {
-						throw new Error("Empty audio data received");
-					}
-
-					const audioBlob = new Blob([bytes], { type: "audio/mpeg" });
-					const audioUrl = URL.createObjectURL(audioBlob);
-					const audio = new Audio(audioUrl);
-
-					audio.onloadstart = () => console.log("🎵 Audio loading started");
-					audio.oncanplay = () => console.log("🎵 Audio ready to play");
-					audio.onended = () => {
-						console.log("✅ Audio playback completed");
-						URL.revokeObjectURL(audioUrl);
-						currentAudioRef.current = null;
-						// Return to idle state when audio ends
-						if (isVoiceMode) {
-							setMicState('idle');
-						}
-					};
-					audio.onerror = (e) => {
-						console.error("❌ Audio playback error:", e);
-						URL.revokeObjectURL(audioUrl);
-						currentAudioRef.current = null;
-						toast.error(
-							"Failed to play audio response. Please check your audio settings."
-						);
-					};
-
-					audio.volume = 0.8;
-					currentAudioRef.current = audio;
-					await audio.play();
-				} catch (error) {
-					console.error("❌ Error playing audio:", error);
-					currentAudioRef.current = null;
-
-					if (error.name === "NotAllowedError") {
-						toast.error(
-							"Audio playback blocked. Please allow audio autoplay in your browser."
-						);
-					} else if (error.name === "NotSupportedError") {
-						toast.error("Audio format not supported by your browser.");
-					} else if (error.message.includes("No audio data")) {
-						toast.error("No audio response received from server.");
-					} else if (error.message.includes("Empty audio data")) {
-						toast.error("Empty audio response received.");
-					} else {
-						toast.error("Failed to play audio response.");
-					}
-				}
-			};
-
 			setInputMessage("");
 			setTranscript("");
 			setIsLoading(true);
@@ -136,30 +363,38 @@ const ChatInterface = () => {
 			};
 			setMessages((prev) => [...prev, userMessage]);
 			try {
-				const response = await chatAPI.sendMessage({
-					message: messageText,
-					chat_id: chatId || sessionStorage.getItem(`chat_id_${agentId}`),
-					agent_id: agentId,
-					sender: "user",
-					requestAudio: voiceMode,
-				});
-				if (response.data?.data?.response) {
-					const assistantMessage = {
-						id: Date.now() + 1,
-						message: response.data.data.response,
-						sender: "assistant",
-						timestamp: new Date().toISOString(),
-					};
-					setMessages((prev) => [...prev, assistantMessage]);
+				// Use WebSocket for all messages (both text and audio)
+				if (isWebSocketConnected) {
+					console.log("🚀 Using WebSocket streaming for message");
 
-					// Play audio response if available
-					if (voiceMode && response.data?.data?.audio) {
-						await playAudioResponse(response.data.data.audio);
-					} else if (voiceMode) {
-						toast.error(
-							"Audio response not available, but text response is shown."
-						);
+					// Clear any previous streaming response before starting new message
+					setStreamingResponse("");
+
+					// Set mic state to speaking while waiting for response (for voice mode)
+					if (voiceMode) {
+						setMicState("speaking");
 					}
+
+					// Send message via WebSocket (same format for both text and voice)
+					const success = websocketService.sendMessage(messageText, {
+						message: messageText,
+						chat_id: chatId || sessionStorage.getItem(`chat_id_${agentId}`),
+						agent_id: agentId,
+						sender: "user",
+						requestAudio: voiceMode,
+					});
+
+					if (!success) {
+						throw new Error("Failed to send message via WebSocket");
+					}
+
+					// WebSocket event handlers will manage the streaming response
+					return;
+				} else {
+					// No WebSocket connection available
+					throw new Error(
+						"WebSocket not connected. Please refresh the page and try again."
+					);
 				}
 			} catch (error) {
 				const errorInfo = handleApiError(error);
@@ -211,7 +446,7 @@ const ChatInterface = () => {
 				setTranscript("");
 			}
 		},
-		[agentId, chatId, isLoading, isVoiceMode]
+		[agentId, chatId, isLoading, isWebSocketConnected]
 	);
 
 	// Keep a stable reference to handleSendMessage for useEffect
@@ -233,7 +468,7 @@ const ChatInterface = () => {
 			);
 			return;
 		}
-		
+
 		// If currently listening, stop recognition and hide popover
 		if (isListening && isVoiceMode) {
 			console.log("Stopping voice recognition");
@@ -405,7 +640,7 @@ const ChatInterface = () => {
 				if (chatAPI.updateTypingStatus) {
 					chatAPI.updateTypingStatus(chatId, false);
 				}
-			}, 2000);
+			}, 10000);
 		}
 	};
 
@@ -910,10 +1145,9 @@ const ChatInterface = () => {
 		<div className="chat-container">
 			{/* Mic Popover Overlay */}
 			{showMicPopover && (
-				<div 
+				<div
 					className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-					style={{ backdropFilter: 'blur(2px)' }}
-				>
+					style={{ backdropFilter: "blur(2px)" }}>
 					<div className="relative bg-white rounded-3xl p-12 shadow-2xl flex flex-col items-center">
 						{/* Close button */}
 						<button
@@ -924,55 +1158,85 @@ const ChatInterface = () => {
 									currentAudioRef.current.pause();
 									currentAudioRef.current = null;
 									// Reset mic state to idle when audio is stopped
-									setMicState('idle');
+									setMicState("idle");
 								}
 								setShowMicPopover(false);
 								handleVoiceToggle();
 							}}
-							className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 text-xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"
-						>
+							className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 text-xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100">
 							×
 						</button>
-						
+
 						{/* Mic Icon with Animation */}
 						<div className="relative mb-6">
 							{/* Pulsing waves background */}
-							{micState === 'listening' && (
+							{micState === "listening" && (
 								<>
-									<div className="absolute inset-0 rounded-full bg-green-400 opacity-20 animate-ping" style={{ animationDuration: '1s' }}></div>
-									<div className="absolute inset-0 rounded-full bg-green-400 opacity-30 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.2s' }}></div>
-									<div className="absolute inset-0 rounded-full bg-green-400 opacity-10 animate-ping" style={{ animationDuration: '2s', animationDelay: '0.4s' }}></div>
+									<div
+										className="absolute inset-0 rounded-full bg-green-400 opacity-20 animate-ping"
+										style={{ animationDuration: "1s" }}></div>
+									<div
+										className="absolute inset-0 rounded-full bg-green-400 opacity-30 animate-ping"
+										style={{
+											animationDuration: "1.5s",
+											animationDelay: "0.2s",
+										}}></div>
+									<div
+										className="absolute inset-0 rounded-full bg-green-400 opacity-10 animate-ping"
+										style={{
+											animationDuration: "2s",
+											animationDelay: "0.4s",
+										}}></div>
 								</>
 							)}
-							{micState === 'speaking' && (
+							{micState === "speaking" && (
 								<>
-									<div className="absolute inset-0 rounded-full bg-blue-400 opacity-20 animate-ping" style={{ animationDuration: '1s' }}></div>
-									<div className="absolute inset-0 rounded-full bg-blue-400 opacity-30 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.2s' }}></div>
-									<div className="absolute inset-0 rounded-full bg-blue-400 opacity-10 animate-ping" style={{ animationDuration: '2s', animationDelay: '0.4s' }}></div>
+									<div
+										className="absolute inset-0 rounded-full bg-blue-400 opacity-20 animate-ping"
+										style={{ animationDuration: "1s" }}></div>
+									<div
+										className="absolute inset-0 rounded-full bg-blue-400 opacity-30 animate-ping"
+										style={{
+											animationDuration: "1.5s",
+											animationDelay: "0.2s",
+										}}></div>
+									<div
+										className="absolute inset-0 rounded-full bg-blue-400 opacity-10 animate-ping"
+										style={{
+											animationDuration: "2s",
+											animationDelay: "0.4s",
+										}}></div>
 								</>
 							)}
-							
+
 							{/* Main mic icon */}
-							<div className={`w-24 h-24 rounded-full flex items-center justify-center transition-colors duration-300 ${
-								micState === 'listening' ? 'bg-green-500' :
-								micState === 'speaking' ? 'bg-blue-500' :
-								'bg-gray-500'
-							}`}>
+							<div
+								className={`w-24 h-24 rounded-full flex items-center justify-center transition-colors duration-300 ${
+									micState === "listening"
+										? "bg-green-500"
+										: micState === "speaking"
+										? "bg-blue-500"
+										: "bg-gray-500"
+								}`}>
 								<Mic className="w-12 h-12 text-white" />
 							</div>
 						</div>
-						
+
 						{/* Status text */}
 						<div className="text-center">
 							<p className="text-lg font-semibold text-gray-800 mb-2">
-								{micState === 'listening' ? 'Listening...' :
-								 micState === 'speaking' ? 'AI Speaking...' :
-								 'Ready to Listen'}
+								{micState === "listening"
+									? "Listening..."
+									: micState === "speaking"
+									? "AI Speaking..."
+									: "Ready to Listen"}
 							</p>
 							<p className="text-sm text-gray-600">
-								{transcript && micState === 'listening' ? `"${transcript}"` : 
-								 micState === 'speaking' ? 'Playing AI response' :
-								 'Start speaking when ready'}
+								{transcript && micState === "listening"
+									? `"${transcript}"`
+									: micState === "speaking"
+									? "Playing AI response"
+									: "Start speaking when ready"}
 							</p>
 						</div>
 					</div>
@@ -1027,6 +1291,45 @@ const ChatInterface = () => {
 							) : (
 								<>
 									{messages.map(renderMessage)}
+									{/* Show streaming response in real-time - Always show when isLoading or has content */}
+									{(isLoading || streamingResponse) && (
+										<div
+											className="message assistant message-assistant streaming-message"
+											style={{
+												backgroundColor: "#f0f8ff",
+												border: "2px solid #007acc",
+											}}>
+											<div className="message-avatar">
+												<Bot className="w-4 h-4" />
+											</div>
+											<div className="message-content">
+												<div className="text-xs text-blue-600 mb-1">
+													{streamingResponse
+														? "Streaming..."
+														: "Waiting for response..."}
+												</div>
+												{streamingResponse ? (
+													<div className="streaming-content">
+														{/* Show raw text while streaming for better UX */}
+														<div className="whitespace-pre-wrap">
+															{streamingResponse}
+														</div>
+													</div>
+												) : (
+													<div className="text-gray-500 italic">
+														Processing your message...
+													</div>
+												)}
+												<div className="message-time">
+													{format(new Date(), "HH:mm")}
+													<span className="ml-1 text-blue-500 typing-indicator animate-pulse">
+														●
+													</span>
+													{/* Streaming indicator with animation */}
+												</div>
+											</div>
+										</div>
+									)}
 									<div ref={messagesEndRef} />
 								</>
 							)}

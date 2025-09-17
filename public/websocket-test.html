@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Streaming Test</title>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .message-container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        .streaming-response {
+            background-color: #e8f5e8;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            border: 1px solid #4CAF50;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .sending { background-color: #fff3cd; color: #856404; }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Streaming Test</h1>
+    
+    <div class="status" id="status">Connecting...</div>
+    
+    <div class="message-container">
+        <h3>Test Message</h3>
+        <input type="text" id="messageInput" placeholder="Type your message..." style="width: 70%; padding: 10px;">
+        <button onclick="sendMessage()" style="padding: 10px 20px;">Send Message</button>
+    </div>
+    
+    <div class="message-container">
+        <h3>Streaming Response</h3>
+        <div id="streamingResponse" class="streaming-response">Waiting for response...</div>
+    </div>
+    
+    <div class="message-container">
+        <h3>Connection Log</h3>
+        <div id="log" style="max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px;"></div>
+    </div>
+
+    <script>
+        const socket = io('http://localhost:8000');
+        const statusEl = document.getElementById('status');
+        const responseEl = document.getElementById('streamingResponse');
+        const logEl = document.getElementById('log');
+        
+        let currentResponse = '';
+        
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logEl.innerHTML += `[${timestamp}] ${message}<br>`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        function updateStatus(message, className) {
+            statusEl.textContent = message;
+            statusEl.className = 'status ' + className;
+            log(`STATUS: ${message}`);
+        }
+        
+        socket.on('connect', () => {
+            updateStatus('✅ Connected to WebSocket server', 'connected');
+            log(`Socket ID: ${socket.id}`);
+        });
+        
+        socket.on('disconnect', () => {
+            updateStatus('🔌 Disconnected from WebSocket server', 'disconnected');
+        });
+        
+        socket.on('connect_error', (error) => {
+            updateStatus('❌ Connection Error', 'error');
+            log(`Connection error: ${error.message}`);
+        });
+        
+        // WebSocket streaming events
+        socket.on('message-received', (data) => {
+            log(`Message received: ${JSON.stringify(data)}`);
+        });
+        
+        socket.on('response-start', (data) => {
+            log('🚀 Response streaming started');
+            currentResponse = '';
+            responseEl.textContent = '';
+            updateStatus('📡 Streaming response...', 'sending');
+        });
+        
+        socket.on('text-chunk', (data) => {
+            log(`Text chunk: "${data.chunk}"`);
+            currentResponse += data.chunk;
+            responseEl.textContent = currentResponse;
+        });
+        
+        socket.on('audio-chunk', (data) => {
+            log(`Audio chunk received: ${data.audioData ? data.audioData.length : 0} bytes`);
+        });
+        
+        socket.on('response-complete', (data) => {
+            log('✅ Response streaming complete');
+            updateStatus('✅ Response completed', 'connected');
+            log(`Full response: "${data.fullResponse}"`);
+        });
+        
+        socket.on('error', (data) => {
+            log(`❌ Error: ${data.message}`);
+            updateStatus('❌ Error occurred', 'error');
+        });
+        
+        function sendMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+            
+            if (!message) {
+                alert('Please enter a message');
+                return;
+            }
+            
+            log(`Sending message: "${message}"`);
+            updateStatus('📤 Sending message...', 'sending');
+            
+            // Send chat message
+            socket.emit('chat-message', {
+                query: message,
+                agentId: 'test-agent-id',
+                leadId: 'test-lead-id',
+                voiceEnabled: false,
+                sessionId: 'test-session-' + Date.now()
+            });
+            
+            messageInput.value = '';
+        }
+        
+        // Allow Enter key to send message
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        log('WebSocket test page loaded');
+    </script>
+</body>
+</html>

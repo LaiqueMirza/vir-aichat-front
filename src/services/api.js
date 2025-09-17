@@ -110,9 +110,23 @@ export const chatAPI = {
     });
   },
   
-  // Send message (backend route: /chat/:agentId/message)
+  // Send message (backend route: /chat/message) - REST fallback
   sendMessage: (data) => {
     return api.post(`/chat/message`, data);
+  },
+
+  // Send streaming voice message via WebSocket
+  sendStreamingVoiceMessage: (audioData, metadata = {}) => {
+    // This will be handled by the WebSocket service
+    const webSocketService = require('./websocketService').default;
+    return webSocketService.sendVoiceMessage(audioData, metadata);
+  },
+
+  // Send streaming text message via WebSocket  
+  sendStreamingTextMessage: (text, metadata = {}) => {
+    // This will be handled by the WebSocket service
+    const webSocketService = require('./websocketService').default;
+    return webSocketService.sendTextMessage(text, metadata);
   },
   
   // Get chat by ID
