@@ -39,11 +39,16 @@ const ChatInterface = () => {
 	const isVoiceModeRef = useRef(isVoiceMode);
 	const currentAudioRef = useRef(null);
 	const streamingResponseRef = useRef("");
+	const audioQueueRef = useRef([]);
+	const isPlayingAudioRef = useRef(false);
+	const playAudioResponseRef = useRef(null);
+	const micStateRef = useRef("idle");
 
 	useEffect(() => {
 		transcriptRef.current = transcript;
 		isVoiceModeRef.current = isVoiceMode;
 		streamingResponseRef.current = streamingResponse;
+		micStateRef.current = micState;
 
 		// Debug log to track streaming response changes
 		if (streamingResponse) {
@@ -53,71 +58,143 @@ const ChatInterface = () => {
 				"characters"
 			);
 		}
-	}, [transcript, isVoiceMode, streamingResponse]);
-	// Audio playback function for WebSocket responses
-	const playAudioResponse = useCallback(async (base64AudioData) => {
-		try {
-			if (!base64AudioData) {
-				throw new Error("No audio data provided");
-			}
+	}, [transcript, isVoiceMode, streamingResponse, micState]);
 
-			console.log("🎵 Playing audio response");
+	// Process audio queue sequentially
+	const processAudioQueue = useCallback(async () => {
+		if (isPlayingAudioRef.current || audioQueueRef.current.length === 0) {
+			return;
+		}
 
-			const binaryString = atob(base64AudioData);
-			const bytes = new Uint8Array(binaryString.length);
-			for (let i = 0; i < binaryString.length; i++) {
-				bytes[i] = binaryString.charCodeAt(i);
-			}
+		console.log(
+			"🎵 Processing audio queue, items:",
+			audioQueueRef.current.length
+		);
+		const nextAudioChunk = audioQueueRef.current.shift();
 
-			if (bytes.length === 0) {
-				throw new Error("Empty audio data received");
-			}
+		if (nextAudioChunk) {
+			console.log("🎵 Playing next audio chunk from queue");
+			setMicState("speaking");
 
-			const audioBlob = new Blob([bytes], { type: "audio/mpeg" });
-			const audioUrl = URL.createObjectURL(audioBlob);
-			const audio = new Audio(audioUrl);
+			// Add text to streaming response if available
+			// if (nextAudioChunk.text) {
+			// 	setStreamingResponse((prev) => {
+			// 		const newResponse = prev + nextAudioChunk.text;
+			// 		console.log("📝 [Queue] Updated streamingResponse:", newResponse.length);
+			// 		return newResponse;
+			// 	});
+			// }
 
-			audio.onloadstart = () => console.log("🎵 Audio loading started");
-			audio.oncanplay = () => console.log("🎵 Audio ready to play");
-			audio.onended = () => {
-				console.log("✅ Audio playback completed");
-				URL.revokeObjectURL(audioUrl);
-				currentAudioRef.current = null;
-				// Return to idle state when audio ends
-				if (isVoiceModeRef.current) {
+			// Use the ref to call the audio response function
+			if (playAudioResponseRef.current) {
+				try {
+					await playAudioResponseRef.current(nextAudioChunk.audio);
+				} catch (error) {
+					console.error("❌ Failed to play audio chunk from queue:", error);
+					// Continue processing queue even on error
 					setMicState("idle");
 				}
-			};
-			audio.onerror = (e) => {
-				console.error("❌ Audio playback error:", e);
-				URL.revokeObjectURL(audioUrl);
-				currentAudioRef.current = null;
-				toast.error(
-					"Failed to play audio response. Please check your audio settings."
-				);
-			};
-
-			audio.volume = 0.8;
-			currentAudioRef.current = audio;
-			await audio.play();
-		} catch (error) {
-			console.error("❌ Error playing audio:", error);
-			currentAudioRef.current = null;
-
-			if (error.name === "NotAllowedError") {
-				toast.error(
-					"Audio playback blocked. Please allow audio autoplay in your browser."
-				);
-			} else if (error.name === "NotSupportedError") {
-				toast.error("Audio format not supported by your browser.");
-			} else if (error.message.includes("No audio data")) {
-				toast.error("No audio response received from server.");
-			} else if (error.message.includes("Empty audio data")) {
-				toast.error("Empty audio response received.");
-			} else {
-				toast.error("Failed to play audio response.");
 			}
 		}
+	}, []);
+
+	// Audio playback function for WebSocket responses
+	const playAudioResponse = useCallback(
+		async (base64AudioData) => {
+			try {
+				if (!base64AudioData) {
+					throw new Error("No audio data provided");
+				}
+
+				console.log("🎵 Playing audio response");
+				isPlayingAudioRef.current = true;
+
+				const binaryString = atob(base64AudioData);
+				const bytes = new Uint8Array(binaryString.length);
+				for (let i = 0; i < binaryString.length; i++) {
+					bytes[i] = binaryString.charCodeAt(i);
+				}
+
+				if (bytes.length === 0) {
+					throw new Error("Empty audio data received");
+				}
+
+				const audioBlob = new Blob([bytes], { type: "audio/mpeg" });
+				const audioUrl = URL.createObjectURL(audioBlob);
+				const audio = new Audio(audioUrl);
+
+				audio.onloadstart = () => console.log("🎵 Audio loading started");
+				audio.oncanplay = () => console.log("🎵 Audio ready to play");
+				audio.onended = () => {
+					console.log("✅ Audio playback completed");
+					URL.revokeObjectURL(audioUrl);
+					currentAudioRef.current = null;
+					isPlayingAudioRef.current = false;
+
+					// Return to idle state when audio ends
+					if (isVoiceModeRef.current) {
+						setMicState("idle");
+					}
+
+					// Process next audio chunk in queue if available
+					processAudioQueue();
+				};
+				audio.onerror = (e) => {
+					console.error("❌ Audio playback error:", e);
+					URL.revokeObjectURL(audioUrl);
+					currentAudioRef.current = null;
+					isPlayingAudioRef.current = false;
+					toast.error(
+						"Failed to play audio response. Please check your audio settings."
+					);
+
+					// Process next audio chunk in queue even on error
+					processAudioQueue();
+				};
+
+				audio.volume = 0.8;
+				currentAudioRef.current = audio;
+				await audio.play();
+			} catch (error) {
+				console.error("❌ Error playing audio:", error);
+				currentAudioRef.current = null;
+				isPlayingAudioRef.current = false;
+
+				if (error.name === "NotAllowedError") {
+					toast.error(
+						"Audio playback blocked. Please allow audio autoplay in your browser."
+					);
+				} else if (error.name === "NotSupportedError") {
+					toast.error("Audio format not supported by your browser.");
+				} else if (error.message.includes("No audio data")) {
+					toast.error("No audio response received from server.");
+				} else if (error.message.includes("Empty audio data")) {
+					toast.error("Empty audio response received.");
+				} else {
+					toast.error("Failed to play audio response.");
+				}
+
+				// Process next audio chunk in queue even on error
+				processAudioQueue();
+			}
+		},
+		[processAudioQueue]
+	);
+
+	// Update the ref whenever the function changes
+	useEffect(() => {
+		playAudioResponseRef.current = playAudioResponse;
+	}, [playAudioResponse]);
+
+	// Clear audio queue when starting new message
+	const clearAudioQueue = useCallback(() => {
+		console.log("🗑️ Clearing audio queue");
+		audioQueueRef.current = [];
+		if (currentAudioRef.current) {
+			currentAudioRef.current.pause();
+			currentAudioRef.current = null;
+		}
+		isPlayingAudioRef.current = false;
 	}, []);
 
 	// Initialize WebSocket connection
@@ -163,51 +240,106 @@ const ChatInterface = () => {
 			};
 
 			const handleMessageAudioChunk = async (data) => {
-				// Always try to play audio if available, regardless of voice mode for testing
+				console.log("🎵 [ChatInterface] Received message audio chunk:", data);
+				console.log(
+					"🎵 [ChatInterface] Voice mode status:",
+					isVoiceModeRef.current
+				);
+				console.log(
+					"🎵 [ChatInterface] Audio data available:",
+					!!data.data?.audio
+				);
+				console.log("🎵 [ChatInterface] Text data:", data.data?.text);
+				console.log("🎵 [ChatInterface] Success status:", data.success);
+				console.log(
+					"🎵 [ChatInterface] Is currently playing audio:",
+					isPlayingAudioRef.current
+				);
+				console.log("🎵 [ChatInterface] Mic state:", micStateRef.current);
+
+				// Always process audio chunks if available, regardless of voice mode for testing
 				if (data.success && data.data?.audio) {
-					try {
-						// Stop any currently playing audio first
-						if (currentAudioRef.current ) {
+					console.log("🎵 [ChatInterface] Attempting to process audio chunk");
+					console.log(
+						"🎵 [ChatInterface] Audio data length:",
+						data.data.audio.length
+					);
+
+					// Create audio chunk object for queue
+					const audioChunk = {
+						audio: data.data.audio,
+						text: data.data.text || "",
+					};
+
+					// If AI is currently speaking, queue the chunk instead of interrupting
+					if (isPlayingAudioRef.current && micStateRef.current === "speaking") {
+						console.log(
+							"🎵 [ChatInterface] AI is currently speaking, adding chunk to queue"
+						);
+						audioQueueRef.current.push(audioChunk);
+						console.log(
+							"🎵 [ChatInterface] Queue length:",
+							audioQueueRef.current.length
+						);
+					} else {
+						// If not playing or not in speaking state, check if we should stop current audio
+						if (currentAudioRef.current && micStateRef.current !== "speaking") {
 							console.log(
-								"🔇 [ChatInterface] Stopping current audio to play new chunk"
+								"🔇 [ChatInterface] Stopping non-speaking audio to play new chunk"
 							);
 							currentAudioRef.current.pause();
 							currentAudioRef.current = null;
+							isPlayingAudioRef.current = false;
 						}
 
-						// Set mic state to indicate audio is playing
-						setMicState("speaking");
+						// If no audio is currently playing, play immediately
+						if (!isPlayingAudioRef.current) {
+							console.log("🎵 [ChatInterface] Playing audio chunk immediately");
+							setMicState("speaking");
 
-						// Play the audio chunk immediately
-						await playAudioResponse(data.data.audio);
+							try {
+								// Play the audio chunk immediately
+								await playAudioResponse(audioChunk.audio);
 
-						console.log("✅ [ChatInterface] Audio chunk played successfully");
-
-						// Also add the text to streaming response for visual feedback
-						if (data.data.text) {
-							setStreamingResponse((prev) => {
-								const newResponse = prev + data.data.text;
 								console.log(
-									"📝 [ChatInterface] Updated streamingResponse with audio text:",
-									newResponse.length
+									"✅ [ChatInterface] Audio chunk played successfully"
 								);
-								return newResponse;
-							});
-						}
-					} catch (error) {
-						console.error(
-							"❌ [ChatInterface] Error details:",
-							error.name,
-							error.message
-						);
 
-						// Fall back to text streaming if audio fails
-						if (data.data.text) {
-							setStreamingResponse((prev) => prev + data.data.text);
-						}
+								// Also add the text to streaming response for visual feedback
+								// if (audioChunk.text) {
+								// 	setStreamingResponse((prev) => {
+								// 		const newResponse = prev + audioChunk.text;
+								// 		console.log("📝 [ChatInterface] Updated streamingResponse with audio text:", newResponse.length);
+								// 		return newResponse;
+								// 	});
+								// }
+							} catch (error) {
+								console.error(
+									"❌ [ChatInterface] Failed to play audio chunk:",
+									error
+								);
+								console.error(
+									"❌ [ChatInterface] Error details:",
+									error.name,
+									error.message
+								);
 
-						// Reset mic state on error
-						setMicState("idle");
+								// Fall back to text streaming if audio fails
+								if (audioChunk.text) {
+									setStreamingResponse((prev) => prev + audioChunk.text);
+								}
+
+								// Reset mic state on error
+								setMicState("idle");
+								isPlayingAudioRef.current = false;
+							}
+						} else {
+							// If audio is playing but not in speaking state, queue it
+							console.log(
+								"🎵 [ChatInterface] Audio playing but not speaking state, queueing chunk"
+							);
+							audioQueueRef.current.push(audioChunk);
+						}
 					}
 				} else if (data.data?.text) {
 					// If no audio, just update streaming text
@@ -367,8 +499,9 @@ const ChatInterface = () => {
 				if (isWebSocketConnected) {
 					console.log("🚀 Using WebSocket streaming for message");
 
-					// Clear any previous streaming response before starting new message
+					// Clear any previous streaming response and audio queue before starting new message
 					setStreamingResponse("");
+					clearAudioQueue();
 
 					// Set mic state to speaking while waiting for response (for voice mode)
 					if (voiceMode) {
@@ -446,7 +579,7 @@ const ChatInterface = () => {
 				setTranscript("");
 			}
 		},
-		[agentId, chatId, isLoading, isWebSocketConnected]
+		[agentId, chatId, isLoading, isWebSocketConnected, clearAudioQueue]
 	);
 
 	// Keep a stable reference to handleSendMessage for useEffect
