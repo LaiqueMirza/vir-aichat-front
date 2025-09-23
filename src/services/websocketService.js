@@ -296,7 +296,9 @@ class WebSocketService {
 		const message = {
 			message: messageData.message || text,
 			chat_id: messageData.chat_id,
-			agent_id: messageData.agent_id,
+			agent: messageData.agent, // Send complete agent object instead of just agent_id
+			lead_id: messageData.lead_id, // Include lead_id
+			chat_history: messageData.chat_history, // Include chat history
 			sender: messageData.sender || "user",
 			requestAudio: messageData.requestAudio || false,
 		};
@@ -319,7 +321,9 @@ class WebSocketService {
 		const message = {
 			message: messageData.message || text,
 			chat_id: messageData.chat_id,
-			agent_id: messageData.agent_id,
+			agent: messageData.agent, // Send complete agent object instead of just agent_id
+			lead_id: messageData.lead_id, // Include lead_id
+			chat_history: messageData.chat_history, // Include chat history
 			sender: messageData.sender || "user",
 			requestAudio: messageData.requestAudio || true, // Default to true for voice messages
 			timestamp: Date.now(),

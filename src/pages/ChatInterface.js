@@ -13,6 +13,7 @@ const ChatInterface = () => {
 	const navigate = useNavigate();
 	const [agent, setAgent] = useState({});
 	const [chat, setChat] = useState({});
+	const [lead, setLead] = useState({}); // Add lead state
 	const [messages, setMessages] = useState([]);
 	const [inputMessage, setInputMessage] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
@@ -27,12 +28,12 @@ const ChatInterface = () => {
 	const [isVoiceMode, setIsVoiceMode] = useState(false);
 	const [transcript, setTranscript] = useState("");
 	const [showMicPopover, setShowMicPopover] = useState(false);
-	const [micState, setMicState] = useState('idle'); // 'idle', 'listening', 'speaking'
-	
+	const [micState, setMicState] = useState("idle"); // 'idle', 'listening', 'speaking'
+
 	// WebSocket and streaming states
 	const [streamingResponse, setStreamingResponse] = useState("");
 	const [isWebSocketConnected, setIsWebSocketConnected] = useState(false);
-	
+
 	// Refs
 	const silenceTimerRef = useRef(null);
 	const transcriptRef = useRef("");
@@ -466,6 +467,8 @@ const ChatInterface = () => {
 	const typingTimeoutRef = useRef(null);
 	const messageCache = useRef(new Map());
 	const debounceTimeoutRef = useRef(null);
+	const scrollTimeoutRef = useRef(null);
+	const streamingMessageRef = useRef(null);
 
 	// Check if this is the first load of the session
 	const isFirstLoad = useCallback(() => {
@@ -508,11 +511,32 @@ const ChatInterface = () => {
 						setMicState("speaking");
 					}
 
+					// Format the last 4 chat messages for context
+					const last4Messages = messages.slice(-4);
+					const formattedChatHistory = last4Messages.length > 0 
+						? last4Messages
+							.map(
+								(msg) =>
+									`${msg.sender === "user" ? "user" : "assistant"}: ${
+										msg.message
+									}`
+							)
+							.join("\n")
+						: []; // Return empty array if no messages instead of empty string
+
+					// Ensure agent has required properties, fallback to agent_id if needed
+					const agentData = agent && Object.keys(agent).length > 0 ? agent : { agent_id: agentId };
+					
+					// Ensure lead_id is properly extracted
+					const leadId = lead && typeof lead === 'object' && lead.lead_id ? lead.lead_id : null;
+
 					// Send message via WebSocket (same format for both text and voice)
 					const success = websocketService.sendMessage(messageText, {
 						message: messageText,
 						chat_id: chatId || sessionStorage.getItem(`chat_id_${agentId}`),
-						agent_id: agentId,
+						agent: agentData, // Send complete agent data with fallback
+						lead_id: leadId, // Include lead_id with proper fallback
+						chat_history: formattedChatHistory, // Include formatted chat history or empty array
 						sender: "user",
 						requestAudio: voiceMode,
 					});
@@ -579,7 +603,16 @@ const ChatInterface = () => {
 				setTranscript("");
 			}
 		},
-		[agentId, chatId, isLoading, isWebSocketConnected, clearAudioQueue]
+		[
+			agentId,
+			chatId,
+			isLoading,
+			isWebSocketConnected,
+			clearAudioQueue,
+			lead,
+			agent,
+			messages,
+		]
 	);
 
 	// Keep a stable reference to handleSendMessage for useEffect
@@ -786,6 +819,9 @@ const ChatInterface = () => {
 			if (debounceTimeoutRef.current) {
 				clearTimeout(debounceTimeoutRef.current);
 			}
+			if (scrollTimeoutRef.current) {
+				clearTimeout(scrollTimeoutRef.current);
+			}
 		};
 	}, []);
 
@@ -844,6 +880,7 @@ const ChatInterface = () => {
 				setIsLoadingAgent(false);
 				setAgent(response.data.agent);
 				setChat(response.data.chat);
+				setLead(response.data.lead); // Store lead information
 				setChatId(response.data.chat.chat_id);
 
 				// Load existing messages if chat exists
@@ -900,6 +937,13 @@ const ChatInterface = () => {
 							setChatId(storedChatId);
 							setAgent(JSON.parse(storedAgent));
 							setChat(JSON.parse(storedChat));
+
+							// Restore lead information if available
+							const storedLead = sessionStorage.getItem(`lead_${agentId}`);
+							if (storedLead) {
+								setLead(JSON.parse(storedLead));
+							}
+
 							setLeadCaptured(true);
 
 							// Load chat history for the restored session
@@ -939,14 +983,19 @@ const ChatInterface = () => {
 		loadChatHistory,
 	]);
 
-	// Store session data when chat/agent data changes
+	// Store session data when chat/agent/lead data changes
 	useEffect(() => {
 		if (agentId && chat.chat_id && agent.name) {
 			sessionStorage.setItem(`chat_id_${agentId}`, chat.chat_id);
 			sessionStorage.setItem(`agent_${agentId}`, JSON.stringify(agent));
 			sessionStorage.setItem(`chat_${agentId}`, JSON.stringify(chat));
+
+			// Store lead information if available
+			if (lead.lead_id) {
+				sessionStorage.setItem(`lead_${agentId}`, JSON.stringify(lead));
+			}
 		}
-	}, [agentId, chat, agent]);
+	}, [agentId, chat, agent, lead]);
 
 	// Initialize speech recognition instance once
 	const recognitionRef = useRef(null);
@@ -1166,7 +1215,7 @@ const ChatInterface = () => {
 					} else {
 						setMicState("idle"); // Back to idle if no transcript
 					}
-				}, 3000);
+				}, 1000);
 			}
 		};
 
@@ -1198,6 +1247,40 @@ const ChatInterface = () => {
 			messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
 		}
 	}, [messages]);
+
+	// Throttled scroll function for streaming responses
+	const throttledScrollToBottom = useCallback(() => {
+		if (scrollTimeoutRef.current) {
+			clearTimeout(scrollTimeoutRef.current);
+		}
+		scrollTimeoutRef.current = setTimeout(() => {
+			// Prefer scrolling to streaming message if it exists and has content
+			if (streamingMessageRef.current && streamingResponse) {
+				streamingMessageRef.current.scrollIntoView({ 
+					behavior: "smooth",
+					block: "end" // Ensure the bottom of the streaming message is visible
+				});
+			} else if (messagesEndRef.current) {
+				messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+			}
+		}, 20); // Reduced throttle to 50ms for more responsive scrolling during streaming
+	}, [streamingResponse]);
+
+	// Auto-scroll to bottom when streaming response updates
+	useEffect(() => {
+		if (streamingResponse) {
+			throttledScrollToBottom();
+		}
+	}, [streamingResponse, throttledScrollToBottom]);
+
+	// Auto-scroll to bottom when loading starts (new message being processed)
+	useEffect(() => {
+		if (isLoading && messagesEndRef.current) {
+			// Immediate scroll when loading starts
+			messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+		}
+	}, [isLoading]);
+
 	// Keep inputMessage in sync with transcript for voice mode
 	useEffect(() => {
 		if (isVoiceMode) {
@@ -1427,6 +1510,7 @@ const ChatInterface = () => {
 									{/* Show streaming response in real-time - Always show when isLoading or has content */}
 									{(isLoading || streamingResponse) && (
 										<div
+											ref={streamingMessageRef}
 											className="message assistant message-assistant streaming-message"
 											style={{
 												backgroundColor: "#f0f8ff",
