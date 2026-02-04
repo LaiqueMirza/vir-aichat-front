@@ -7,6 +7,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { chatAPI, leadAPI, handleApiError } from "../services/api";
 import websocketService from "../services/websocketService";
+import StreamingTTSService from "../services/streamingTTSService";
+import { userSilenceTimeout } from '../utils/constants';
 
 const ChatInterface = () => {
 	const { agentId } = useParams();
@@ -34,15 +36,88 @@ const ChatInterface = () => {
 	const [streamingResponse, setStreamingResponse] = useState("");
 	const [isWebSocketConnected, setIsWebSocketConnected] = useState(false);
 
+	// TTS Service
+	const [ttsService] = useState(() => new StreamingTTSService());
+
+	// Initialize TTS callbacks for UI synchronization and speech recognition isolation
+	useEffect(() => {
+		if (ttsService) {
+			ttsService.setUICallbacks(
+				// onSpeakingStart - triggered when AI starts speaking
+				() => {
+					console.log("🎤 TTS started - setting mic state to speaking");
+					setMicState("speaking");
+				},
+				// onSpeakingEnd - triggered when AI stops speaking
+				() => {
+					console.log("🎤 TTS ended - setting mic state to idle");
+					setMicState("idle");
+				},
+				// onError - triggered on TTS errors
+				(error) => {
+					console.error("🎤 TTS error:", error);
+					setMicState("idle");
+				},
+				// onTTSActiveChange - critical for speech recognition isolation
+				(isActive) => {
+					console.log(`🎤 TTS active state changed: ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
+					
+					if (isActive) {
+						// TTS is starting - pause speech recognition to prevent AI voice feedback
+						if (recognitionRef.current && isListening && isVoiceMode) {
+							console.log("🔇 Pausing speech recognition during TTS playback");
+							isPausedByTTSRef.current = true; // Mark as paused by TTS
+							try {
+								recognitionRef.current.stop();
+								setIsListening(false);
+							} catch (error) {
+								console.warn("⚠️ Error pausing speech recognition:", error);
+							}
+						}
+					} else {
+						// TTS has ended - resume speech recognition if it was paused by TTS
+						if (isVoiceMode && !isListening && isPausedByTTSRef.current && recognitionRef.current) {
+							console.log("🎤 Resuming speech recognition after TTS completion");
+							isPausedByTTSRef.current = false; // Clear the flag
+							
+							// Clear any existing restart timeout
+							if (speechRestartTimeoutRef.current) {
+								clearTimeout(speechRestartTimeoutRef.current);
+								speechRestartTimeoutRef.current = null;
+							}
+							
+							speechRestartTimeoutRef.current = setTimeout(async () => {
+								// Double-check we're still in voice mode and not manually stopped
+								if (isVoiceModeRef.current && !isListening && !isPausedByTTSRef.current) {
+									try {
+										await recognitionRef.current.start();
+										setIsListening(true);
+										console.log("✅ Speech recognition resumed successfully after TTS");
+									} catch (error) {
+										console.error("❌ Failed to resume speech recognition after TTS:", error);
+										// Reset voice mode if restart fails
+										setIsVoiceMode(false);
+										setIsListening(false);
+										isPausedByTTSRef.current = false;
+									}
+								}
+								speechRestartTimeoutRef.current = null;
+							}, 300); // Small delay to ensure TTS has fully stopped
+						} else if (!isVoiceMode) {
+							// Clear flag if voice mode is disabled
+							isPausedByTTSRef.current = false;
+						}
+					}
+				}
+			);
+		}
+	}, [ttsService, isListening, isVoiceMode]);
+
 	// Refs
 	const silenceTimerRef = useRef(null);
 	const transcriptRef = useRef("");
 	const isVoiceModeRef = useRef(isVoiceMode);
-	const currentAudioRef = useRef(null);
 	const streamingResponseRef = useRef("");
-	const audioQueueRef = useRef([]);
-	const isPlayingAudioRef = useRef(false);
-	const playAudioResponseRef = useRef(null);
 	const micStateRef = useRef("idle");
 
 	useEffect(() => {
@@ -61,143 +136,6 @@ const ChatInterface = () => {
 		}
 	}, [transcript, isVoiceMode, streamingResponse, micState]);
 
-	// Process audio queue sequentially
-	const processAudioQueue = useCallback(async () => {
-		if (isPlayingAudioRef.current || audioQueueRef.current.length === 0) {
-			return;
-		}
-
-		console.log(
-			"🎵 Processing audio queue, items:",
-			audioQueueRef.current.length
-		);
-		const nextAudioChunk = audioQueueRef.current.shift();
-
-		if (nextAudioChunk) {
-			console.log("🎵 Playing next audio chunk from queue");
-			setMicState("speaking");
-
-			// Add text to streaming response if available
-			// if (nextAudioChunk.text) {
-			// 	setStreamingResponse((prev) => {
-			// 		const newResponse = prev + nextAudioChunk.text;
-			// 		console.log("📝 [Queue] Updated streamingResponse:", newResponse.length);
-			// 		return newResponse;
-			// 	});
-			// }
-
-			// Use the ref to call the audio response function
-			if (playAudioResponseRef.current) {
-				try {
-					await playAudioResponseRef.current(nextAudioChunk.audio);
-				} catch (error) {
-					console.error("❌ Failed to play audio chunk from queue:", error);
-					// Continue processing queue even on error
-					setMicState("idle");
-				}
-			}
-		}
-	}, []);
-
-	// Audio playback function for WebSocket responses
-	const playAudioResponse = useCallback(
-		async (base64AudioData) => {
-			try {
-				if (!base64AudioData) {
-					throw new Error("No audio data provided");
-				}
-
-				console.log("🎵 Playing audio response");
-				isPlayingAudioRef.current = true;
-
-				const binaryString = atob(base64AudioData);
-				const bytes = new Uint8Array(binaryString.length);
-				for (let i = 0; i < binaryString.length; i++) {
-					bytes[i] = binaryString.charCodeAt(i);
-				}
-
-				if (bytes.length === 0) {
-					throw new Error("Empty audio data received");
-				}
-
-				const audioBlob = new Blob([bytes], { type: "audio/mpeg" });
-				const audioUrl = URL.createObjectURL(audioBlob);
-				const audio = new Audio(audioUrl);
-
-				audio.onloadstart = () => console.log("🎵 Audio loading started");
-				audio.oncanplay = () => console.log("🎵 Audio ready to play");
-				audio.onended = () => {
-					console.log("✅ Audio playback completed");
-					URL.revokeObjectURL(audioUrl);
-					currentAudioRef.current = null;
-					isPlayingAudioRef.current = false;
-
-					// Return to idle state when audio ends
-					if (isVoiceModeRef.current) {
-						setMicState("idle");
-					}
-
-					// Process next audio chunk in queue if available
-					processAudioQueue();
-				};
-				audio.onerror = (e) => {
-					console.error("❌ Audio playback error:", e);
-					URL.revokeObjectURL(audioUrl);
-					currentAudioRef.current = null;
-					isPlayingAudioRef.current = false;
-					toast.error(
-						"Failed to play audio response. Please check your audio settings."
-					);
-
-					// Process next audio chunk in queue even on error
-					processAudioQueue();
-				};
-
-				audio.volume = 0.8;
-				currentAudioRef.current = audio;
-				await audio.play();
-			} catch (error) {
-				console.error("❌ Error playing audio:", error);
-				currentAudioRef.current = null;
-				isPlayingAudioRef.current = false;
-
-				if (error.name === "NotAllowedError") {
-					toast.error(
-						"Audio playback blocked. Please allow audio autoplay in your browser."
-					);
-				} else if (error.name === "NotSupportedError") {
-					toast.error("Audio format not supported by your browser.");
-				} else if (error.message.includes("No audio data")) {
-					toast.error("No audio response received from server.");
-				} else if (error.message.includes("Empty audio data")) {
-					toast.error("Empty audio response received.");
-				} else {
-					toast.error("Failed to play audio response.");
-				}
-
-				// Process next audio chunk in queue even on error
-				processAudioQueue();
-			}
-		},
-		[processAudioQueue]
-	);
-
-	// Update the ref whenever the function changes
-	useEffect(() => {
-		playAudioResponseRef.current = playAudioResponse;
-	}, [playAudioResponse]);
-
-	// Clear audio queue when starting new message
-	const clearAudioQueue = useCallback(() => {
-		console.log("🗑️ Clearing audio queue");
-		audioQueueRef.current = [];
-		if (currentAudioRef.current) {
-			currentAudioRef.current.pause();
-			currentAudioRef.current = null;
-		}
-		isPlayingAudioRef.current = false;
-	}, []);
-
 	// Initialize WebSocket connection
 	useEffect(() => {
 		if (agentId) {
@@ -213,173 +151,24 @@ const ChatInterface = () => {
 			const handleDisconnected = () => {
 				console.log("🔌 WebSocket disconnected");
 				setIsWebSocketConnected(false);
-			};
-
-			const handleTextChunk = (data) => {
-				console.log("📝 Received text chunk:", data.chunk);
-				// Update streaming response in real-time
-				setStreamingResponse((prev) => {
-					console.log("📝 Previous streamingResponse length:", prev.length);
-					const newResponse = prev + data.chunk;
-					console.log(
-						"📝 Updated streamingResponse length:",
-						newResponse.length
-					);
-					return newResponse;
-				});
-			};
-
-			const handleAudioChunk = (data) => {
-				console.log(
-					"🎵 Received audio chunk:",
-					data.audioData?.length || 0,
-					"bytes"
-				);
-				// Audio chunks are automatically played by the websocketService
-				// Set mic state to indicate audio is playing
-				setMicState("speaking");
-			};
-
-			const handleMessageAudioChunk = async (data) => {
-				console.log("🎵 [ChatInterface] Received message audio chunk:", data);
-				console.log(
-					"🎵 [ChatInterface] Voice mode status:",
-					isVoiceModeRef.current
-				);
-				console.log(
-					"🎵 [ChatInterface] Audio data available:",
-					!!data.data?.audio
-				);
-				console.log("🎵 [ChatInterface] Text data:", data.data?.text);
-				console.log("🎵 [ChatInterface] Success status:", data.success);
-				console.log(
-					"🎵 [ChatInterface] Is currently playing audio:",
-					isPlayingAudioRef.current
-				);
-				console.log("🎵 [ChatInterface] Mic state:", micStateRef.current);
-
-				// Always process audio chunks if available, regardless of voice mode for testing
-				if (data.success && data.data?.audio) {
-					console.log("🎵 [ChatInterface] Attempting to process audio chunk");
-					console.log(
-						"🎵 [ChatInterface] Audio data length:",
-						data.data.audio.length
-					);
-
-					// Create audio chunk object for queue
-					const audioChunk = {
-						audio: data.data.audio,
-						text: data.data.text || "",
-					};
-
-					// If AI is currently speaking, queue the chunk instead of interrupting
-					if (isPlayingAudioRef.current && micStateRef.current === "speaking") {
-						console.log(
-							"🎵 [ChatInterface] AI is currently speaking, adding chunk to queue"
-						);
-						audioQueueRef.current.push(audioChunk);
-						console.log(
-							"🎵 [ChatInterface] Queue length:",
-							audioQueueRef.current.length
-						);
-					} else {
-						// If not playing or not in speaking state, check if we should stop current audio
-						if (currentAudioRef.current && micStateRef.current !== "speaking") {
-							console.log(
-								"🔇 [ChatInterface] Stopping non-speaking audio to play new chunk"
-							);
-							currentAudioRef.current.pause();
-							currentAudioRef.current = null;
-							isPlayingAudioRef.current = false;
-						}
-
-						// If no audio is currently playing, play immediately
-						if (!isPlayingAudioRef.current) {
-							console.log("🎵 [ChatInterface] Playing audio chunk immediately");
-							setMicState("speaking");
-
-							try {
-								// Play the audio chunk immediately
-								await playAudioResponse(audioChunk.audio);
-
-								console.log(
-									"✅ [ChatInterface] Audio chunk played successfully"
-								);
-
-								// Also add the text to streaming response for visual feedback
-								// if (audioChunk.text) {
-								// 	setStreamingResponse((prev) => {
-								// 		const newResponse = prev + audioChunk.text;
-								// 		console.log("📝 [ChatInterface] Updated streamingResponse with audio text:", newResponse.length);
-								// 		return newResponse;
-								// 	});
-								// }
-							} catch (error) {
-								console.error(
-									"❌ [ChatInterface] Failed to play audio chunk:",
-									error
-								);
-								console.error(
-									"❌ [ChatInterface] Error details:",
-									error.name,
-									error.message
-								);
-
-								// Fall back to text streaming if audio fails
-								if (audioChunk.text) {
-									setStreamingResponse((prev) => prev + audioChunk.text);
-								}
-
-								// Reset mic state on error
-								setMicState("idle");
-								isPlayingAudioRef.current = false;
-							}
-						} else {
-							// If audio is playing but not in speaking state, queue it
-							console.log(
-								"🎵 [ChatInterface] Audio playing but not speaking state, queueing chunk"
-							);
-							audioQueueRef.current.push(audioChunk);
-						}
-					}
-				} else if (data.data?.text) {
-					// If no audio, just update streaming text
-					console.log("📝 [ChatInterface] No audio data, updating text only");
-					setStreamingResponse((prev) => prev + data.data.text);
-				} else {
-					console.warn(
-						"⚠️ [ChatInterface] Received audio chunk with no usable data:",
-						data
-					);
+				
+				// Stop TTS streaming if connection is lost
+				if (ttsService && ttsService.isStreaming) {
+					console.log("🔇 Stopping TTS due to WebSocket disconnection");
+					ttsService.stopStreaming();
 				}
-			};
-
-			const handleMessageComplete = (data) => {
-				console.log("✅ Message streaming complete");
-				// Add the complete streamed message to messages using the current streaming response
-				const currentStreamingResponse = streamingResponseRef.current;
-				if (currentStreamingResponse.trim()) {
-					const assistantMessage = {
-						id: Date.now() + 1,
-						message: currentStreamingResponse,
-						sender: "assistant",
-						timestamp: new Date().toISOString(),
-					};
-					setMessages((prev) => [...prev, assistantMessage]);
-				}
-				setStreamingResponse(""); // Clear streaming response
-				setIsLoading(false);
-			};
-
-			const handleAudioComplete = () => {
-				console.log("🎵 Audio streaming complete");
-				setMicState("idle");
 			};
 
 			const handleError = (data) => {
-				console.error("❌ WebSocket error:", data.error);
+				console.error("❌ WebSocket error:", data);
 				toast.error("Connection error occurred");
 				setIsLoading(false);
+				
+				// Stop TTS streaming on WebSocket errors
+				if (ttsService && ttsService.isStreaming) {
+					console.log("🔇 Stopping TTS due to WebSocket error");
+					ttsService.stopStreaming();
+				}
 			};
 
 			const handleMessageResponse = async (data) => {
@@ -398,18 +187,11 @@ const ChatInterface = () => {
 					};
 					setMessages((prev) => [...prev, assistantMessage]);
 
-					// // Play audio response if available and in voice mode
-					// if (isVoiceModeRef.current && data.data?.audio) {
-					// 	try {
-					// 		await playAudioResponse(data.data.audio);
-					// 	} catch (error) {
-					// 		console.error("❌ Failed to play audio response:", error);
-					// 		toast.error("Failed to play audio response");
-					// 	}
-					// } else if (isVoiceModeRef.current) {
-					// 	toast.error(
-					// 		"Audio response not available, but text response is shown."
-					// 	);
+					// If in voice mode and we have the final response text
+					// Send it to TTS service with isComplete=true to finish any pending speech
+					// if (isVoiceModeRef.current && ttsService) {
+					// 	// Signal completion of text streaming to the TTS service
+					// 	ttsService.processTextChunk("", true);
 					// }
 				} else {
 					toast.error("Failed to get response from AI");
@@ -417,50 +199,65 @@ const ChatInterface = () => {
 					setStreamingResponse("");
 				}
 
-				// Reset mic state after processing response
-				setMicState("idle");
+				// TTS callbacks will handle mic state resets automatically
 			};
 
 			const handleMessageChunkResponse = (data) => {
-				console.log("📨 Received message chunk response:", data.data.response);
+				console.log(
+					"📨 Received message chunk response:",
+					data.data?.response || data.chunk
+				);
 
-				if (data.success && data.data?.response) {
+				if (data.chunk || data.data?.response) {
+					const chunk = data.chunk || data.data?.response || "";
+
 					// Update streaming response with the chunk
-					setStreamingResponse((prev) => prev + data.data.response);
+					setStreamingResponse((prev) => prev + chunk);
+
+					// Process text chunk for TTS if in voice mode with error handling
+					if (ttsService && isVoiceModeRef.current) {
+						try {
+							ttsService.processTextChunk(chunk);
+						} catch (error) {
+							console.error("❌ Error processing TTS chunk:", error);
+							// Don't let TTS errors break the streaming response
+							// The response should still be displayed even if TTS fails
+						}
+					}
 				}
 			};
 
 			// Register event handlers
 			websocketService.on("connected", handleConnected);
 			websocketService.on("disconnected", handleDisconnected);
-			websocketService.on("textChunk", handleTextChunk);
-			websocketService.on("audioChunk", handleAudioChunk);
-			websocketService.on("messageComplete", handleMessageComplete);
-			websocketService.on("audioComplete", handleAudioComplete);
+			// websocketService.on("textChunk", handleTextChunk);
+			// websocketService.on("audioChunk", handleAudioChunk);
+			// websocketService.on("messageComplete", handleMessageComplete);
+			// websocketService.on("audioComplete", handleAudioComplete);
 			websocketService.on("messageResponse", handleMessageResponse);
 			websocketService.on("messageChunkResponse", handleMessageChunkResponse);
-			websocketService.on("messageAudioChunk", handleMessageAudioChunk);
+			// websocketService.on("messageAudioChunk", handleMessageAudioChunk);
 			websocketService.on("error", handleError);
 
 			// Cleanup on unmount
 			return () => {
 				websocketService.off("connected", handleConnected);
 				websocketService.off("disconnected", handleDisconnected);
-				websocketService.off("textChunk", handleTextChunk);
-				websocketService.off("audioChunk", handleAudioChunk);
-				websocketService.off("messageComplete", handleMessageComplete);
-				websocketService.off("audioComplete", handleAudioComplete);
+				// websocketService.off("textChunk", handleTextChunk);
+				// websocketService.off("audioChunk", handleAudioChunk);
+				// websocketService.off("messageComplete", handleMessageComplete);
+				// websocketService.off("audioComplete", handleAudioComplete);
 				websocketService.off("messageResponse", handleMessageResponse);
 				websocketService.off(
 					"messageChunkResponse",
 					handleMessageChunkResponse
 				);
-				websocketService.off("messageAudioChunk", handleMessageAudioChunk);
+				// websocketService.off("messageAudioChunk", handleMessageAudioChunk);
 				websocketService.off("error", handleError);
 				websocketService.disconnect();
 			};
 		}
-	}, [agentId, playAudioResponse]);
+	}, [agentId, ttsService]);
 
 	const messagesEndRef = useRef(null);
 	const inputRef = useRef(null);
@@ -469,6 +266,7 @@ const ChatInterface = () => {
 	const debounceTimeoutRef = useRef(null);
 	const scrollTimeoutRef = useRef(null);
 	const streamingMessageRef = useRef(null);
+	const speechRestartTimeoutRef = useRef(null); // For managing speech recognition restart
 
 	// Check if this is the first load of the session
 	const isFirstLoad = useCallback(() => {
@@ -481,6 +279,160 @@ const ChatInterface = () => {
 		const firstLoadKey = `first_load_${agentId}`;
 		sessionStorage.setItem(firstLoadKey, "completed");
 	}, [agentId]);
+
+	// Speech recognition health check and recovery
+	const ensureSpeechRecognitionActive = useCallback(async () => {
+		if (!isVoiceMode || !recognitionRef.current) {
+			return false;
+		}
+
+		// Check if speech recognition should be listening but isn't
+		const shouldBeListening = isVoiceMode && !isPausedByTTSRef.current && !ttsService.isTTSActive();
+		const actuallyListening = isListening;
+
+		if (shouldBeListening && !actuallyListening) {
+			console.log("🔧 Speech recognition health check: restarting inactive recognition");
+			try {
+				await recognitionRef.current.start();
+				setIsListening(true);
+				console.log("✅ Speech recognition health check: restart successful");
+				return true;
+			} catch (error) {
+				console.error("❌ Speech recognition health check: restart failed:", error);
+				// If restart fails repeatedly, disable voice mode
+				setIsVoiceMode(false);
+				setIsListening(false);
+				isPausedByTTSRef.current = false;
+				return false;
+			}
+		}
+
+		return actuallyListening;
+	}, [isVoiceMode, isListening, ttsService]);
+
+	// Comprehensive speech system state validator
+	const validateSpeechSystemState = useCallback(() => {
+		const ttsState = ttsService?.getState();
+		const currentState = {
+			isVoiceMode,
+			isListening,
+			isPausedByTTS: isPausedByTTSRef.current,
+			ttsActive: ttsService?.isTTSActive() || false,
+			ttsPlaying: ttsState?.isPlaying || false,
+			micState,
+		};
+
+		console.log("🔍 Speech system state validation:", currentState);
+
+		// Detect inconsistent states and fix them
+		let needsRecovery = false;
+		const recoveryActions = [];
+
+		// Case 1: Voice mode enabled but not listening and TTS not active
+		if (isVoiceMode && !isListening && !isPausedByTTSRef.current && !ttsService?.isTTSActive()) {
+			needsRecovery = true;
+			recoveryActions.push("restart_speech_recognition");
+		}
+
+		// Case 2: TTS not active but isPausedByTTS flag is true
+		if (isPausedByTTSRef.current && !ttsService?.isTTSActive()) {
+			needsRecovery = true;
+			recoveryActions.push("clear_tts_pause_flag");
+			isPausedByTTSRef.current = false;
+		}
+
+		// Case 3: Voice mode disabled but still listening
+		if (!isVoiceMode && isListening) {
+			needsRecovery = true;
+			recoveryActions.push("stop_speech_recognition");
+		}
+
+		if (needsRecovery) {
+			console.log("🔧 Speech system recovery needed:", recoveryActions);
+			return { needsRecovery: true, actions: recoveryActions, state: currentState };
+		}
+
+		return { needsRecovery: false, state: currentState };
+	}, [isVoiceMode, isListening, micState, ttsService]);
+
+	// Automated recovery system
+	const performSpeechSystemRecovery = useCallback(async (recoveryActions) => {
+		console.log("🚑 Performing speech system recovery:", recoveryActions);
+
+		for (const action of recoveryActions) {
+			try {
+				switch (action) {
+					case "restart_speech_recognition":
+						if (recognitionRef.current && isVoiceMode && !isPausedByTTSRef.current) {
+							await recognitionRef.current.start();
+							setIsListening(true);
+							console.log("✅ Recovery: Speech recognition restarted");
+						}
+						break;
+
+					case "clear_tts_pause_flag":
+						isPausedByTTSRef.current = false;
+						console.log("✅ Recovery: TTS pause flag cleared");
+						break;
+
+					case "stop_speech_recognition":
+						if (recognitionRef.current) {
+							recognitionRef.current.stop();
+							setIsListening(false);
+							console.log("✅ Recovery: Speech recognition stopped");
+						}
+						break;
+
+					default:
+						console.warn("⚠️ Unknown recovery action:", action);
+				}
+			} catch (error) {
+				console.error(`❌ Recovery action '${action}' failed:`, error);
+			}
+		}
+	}, [isVoiceMode]);
+
+	// Enhanced periodic health check for speech recognition with recovery
+	useEffect(() => {
+		if (!isVoiceMode) return;
+
+		const healthCheckInterval = setInterval(async () => {
+			// Only check if we're in voice mode
+			if (isVoiceMode) {
+				// Validate the complete speech system state
+				const validation = validateSpeechSystemState();
+				
+				if (validation.needsRecovery) {
+					console.log("🚑 Speech system requires recovery, performing automated fix");
+					await performSpeechSystemRecovery(validation.actions);
+				} else {
+					// Simple health check for normal operation
+					ensureSpeechRecognitionActive();
+				}
+			}
+		}, 5000); // Check every 5 seconds
+
+		return () => clearInterval(healthCheckInterval);
+	}, [isVoiceMode, validateSpeechSystemState, performSpeechSystemRecovery, ensureSpeechRecognitionActive]);
+
+	// Safety mechanism: Monitor voice mode state and ensure proper operation
+	useEffect(() => {
+		if (isVoiceMode && recognitionRef.current) {
+			// Set a timeout to check if recognition is working after enabling voice mode
+			const safetyTimeout = setTimeout(() => {
+				// If voice mode is still active but nothing is happening, validate and fix
+				if (isVoiceModeRef.current) {
+					const validation = validateSpeechSystemState();
+					if (validation.needsRecovery) {
+						console.log("🚨 Safety timeout: Speech system needs recovery");
+						performSpeechSystemRecovery(validation.actions);
+					}
+				}
+			}, 2000); // Check 2 seconds after voice mode is enabled
+
+			return () => clearTimeout(safetyTimeout);
+		}
+	}, [isVoiceMode, validateSpeechSystemState, performSpeechSystemRecovery]);
 
 	// Send message (text or voice transcript)
 	const handleSendMessage = useCallback(
@@ -502,33 +454,43 @@ const ChatInterface = () => {
 				if (isWebSocketConnected) {
 					console.log("🚀 Using WebSocket streaming for message");
 
-					// Clear any previous streaming response and audio queue before starting new message
+					// Clear any previous streaming response before starting new message
 					setStreamingResponse("");
-					clearAudioQueue();
 
-					// Set mic state to speaking while waiting for response (for voice mode)
+					// Set mic state to waiting while processing (for voice mode)
 					if (voiceMode) {
-						setMicState("speaking");
+						// Don't set to "speaking" here - let TTS callbacks handle mic state
+						// Start TTS streaming session for voice responses
+						if (ttsService) {
+							ttsService.startStreaming();
+						}
 					}
 
 					// Format the last 4 chat messages for context
 					const last4Messages = messages.slice(-4);
-					const formattedChatHistory = last4Messages.length > 0 
-						? last4Messages
-							.map(
-								(msg) =>
-									`${msg.sender === "user" ? "user" : "assistant"}: ${
-										msg.message
-									}`
-							)
-							.join("\n")
-						: []; // Return empty array if no messages instead of empty string
+					const formattedChatHistory =
+						last4Messages.length > 0
+							? last4Messages
+									.map(
+										(msg) =>
+											`${msg.sender === "user" ? "user" : "assistant"}: ${
+												msg.message
+											}`
+									)
+									.join("\n")
+							: []; // Return empty array if no messages instead of empty string
 
 					// Ensure agent has required properties, fallback to agent_id if needed
-					const agentData = agent && Object.keys(agent).length > 0 ? agent : { agent_id: agentId };
-					
+					const agentData =
+						agent && Object.keys(agent).length > 0
+							? agent
+							: { agent_id: agentId };
+
 					// Ensure lead_id is properly extracted
-					const leadId = lead && typeof lead === 'object' && lead.lead_id ? lead.lead_id : null;
+					const leadId =
+						lead && typeof lead === "object" && lead.lead_id
+							? lead.lead_id
+							: null;
 
 					// Send message via WebSocket (same format for both text and voice)
 					const success = websocketService.sendMessage(messageText, {
@@ -608,10 +570,10 @@ const ChatInterface = () => {
 			chatId,
 			isLoading,
 			isWebSocketConnected,
-			clearAudioQueue,
 			lead,
 			agent,
 			messages,
+			ttsService,
 		]
 	);
 
@@ -639,6 +601,9 @@ const ChatInterface = () => {
 		if (isListening && isVoiceMode) {
 			console.log("Stopping voice recognition");
 			try {
+				// Clear TTS pause flag since user is manually stopping
+				isPausedByTTSRef.current = false;
+				
 				// Batch state updates
 				setTimeout(() => {
 					setIsVoiceMode(false);
@@ -648,11 +613,20 @@ const ChatInterface = () => {
 					setMicState("idle");
 				}, 0);
 
+				// Disable TTS when exiting voice mode
+				if (ttsService) {
+					ttsService.setMode(false);
+					ttsService.stop(); // Stop any current TTS playback
+				}
+
 				// Clear any pending timers
 				if (silenceTimerRef.current) {
 					clearTimeout(silenceTimerRef.current);
 				}
-
+				if (speechRestartTimeoutRef.current) {
+					clearTimeout(speechRestartTimeoutRef.current);
+					speechRestartTimeoutRef.current = null;
+				}
 				recognitionRef.current.stop();
 				await new Promise((resolve) => setTimeout(resolve, 500));
 			} catch (error) {
@@ -707,6 +681,12 @@ const ChatInterface = () => {
 						if (recognitionRef.current) {
 							await recognitionRef.current.start();
 							console.log("Voice recognition started successfully");
+
+							// Enable TTS for voice mode
+							if (ttsService) {
+								ttsService.setMode(true);
+								ttsService.startStreaming();
+							}
 
 							// Batch state updates after successful start
 							setTimeout(() => {
@@ -821,6 +801,9 @@ const ChatInterface = () => {
 			}
 			if (scrollTimeoutRef.current) {
 				clearTimeout(scrollTimeoutRef.current);
+			}
+			if (speechRestartTimeoutRef.current) {
+				clearTimeout(speechRestartTimeoutRef.current);
 			}
 		};
 	}, []);
@@ -1000,6 +983,7 @@ const ChatInterface = () => {
 	// Initialize speech recognition instance once
 	const recognitionRef = useRef(null);
 	const lastProcessedResultIndexRef = useRef(0);
+	const isPausedByTTSRef = useRef(false); // Track if speech recognition was paused by TTS
 
 	useEffect(() => {
 		const SpeechRecognition =
@@ -1039,9 +1023,15 @@ const ChatInterface = () => {
 		recognition.onerror = (event) => {
 			console.log("Speech recognition error occurred:", event.error);
 
-			// Handle specific error cases
+			// Handle specific error cases with enhanced recovery
 			switch (event.error) {
 				case "not-allowed":
+					// Clear all TTS-related flags
+					isPausedByTTSRef.current = false;
+					if (speechRestartTimeoutRef.current) {
+						clearTimeout(speechRestartTimeoutRef.current);
+						speechRestartTimeoutRef.current = null;
+					}
 					// Batch state updates
 					setTimeout(() => {
 						setIsListening(false);
@@ -1053,17 +1043,44 @@ const ChatInterface = () => {
 					break;
 
 				case "aborted":
-					// Normal when stopping, just log
+					// Normal when stopping, just log - don't change TTS pause flag
 					console.log("Recognition aborted - this is normal when stopping");
 					break;
 
 				case "no-speech":
-					// Just log, don't update state
+					// Just log, don't update state - continue listening
 					console.log("No speech detected - continuing to listen");
+					break;
+
+				case "network":
+					// Network error - attempt recovery if in voice mode
+					console.warn("Network error in speech recognition - attempting recovery");
+					if (isVoiceModeRef.current && !isPausedByTTSRef.current) {
+						// Attempt to restart after a short delay
+						setTimeout(async () => {
+							if (isVoiceModeRef.current && !isPausedByTTSRef.current) {
+								try {
+									await recognition.start();
+									console.log("✅ Recovered from network error");
+								} catch (recoveryError) {
+									console.error("❌ Failed to recover from network error:", recoveryError);
+									toast.error("Voice recognition network error. Please try again.");
+									setIsVoiceMode(false);
+									setIsListening(false);
+								}
+							}
+						}, 1000);
+					}
 					break;
 
 				default:
 					console.error("Speech recognition error:", event.error);
+					// Clear TTS-related flags on error
+					isPausedByTTSRef.current = false;
+					if (speechRestartTimeoutRef.current) {
+						clearTimeout(speechRestartTimeoutRef.current);
+						speechRestartTimeoutRef.current = null;
+					}
 					// Batch state updates
 					setTimeout(() => {
 						setIsListening(false);
@@ -1074,7 +1091,14 @@ const ChatInterface = () => {
 			}
 		};
 		recognition.onend = () => {
-			console.log("Speech recognition ended");
+			console.log("Speech recognition ended, isPausedByTTS:", isPausedByTTSRef.current);
+
+			// If recognition ended due to TTS pause, don't restart it here
+			// The TTS completion callback will handle restart
+			if (isPausedByTTSRef.current) {
+				console.log("Recognition ended due to TTS pause - letting TTS callback handle restart");
+				return;
+			}
 
 			// Only update state if we're not in voice mode
 			if (!isVoiceModeRef.current) {
@@ -1085,15 +1109,15 @@ const ChatInterface = () => {
 				return;
 			}
 
-			// Only restart if we're still in voice mode
-			if (isVoiceModeRef.current) {
+			// Only restart if we're still in voice mode and not paused by TTS
+			if (isVoiceModeRef.current && !isPausedByTTSRef.current) {
 				const restartDelay = 200;
 				console.log(`Scheduling recognition restart in ${restartDelay}ms`);
 
 				const restartTimeout = setTimeout(async () => {
 					// Double check we're still in voice mode when timeout fires
-					if (!isVoiceModeRef.current) {
-						console.log("Voice mode disabled before restart, canceling");
+					if (!isVoiceModeRef.current || isPausedByTTSRef.current) {
+						console.log("Voice mode disabled or paused by TTS before restart, canceling");
 						return;
 					}
 
@@ -1131,15 +1155,23 @@ const ChatInterface = () => {
 		};
 
 		recognition.onresult = (event) => {
-			console.log("Speech recognition result received");
+			console.log("Speech recognition result received, event.results.length:", event.results.length);
 			let finalTranscript = "";
 			let hasInterimResults = false;
 
-			// Interrupt any currently playing audio when user starts speaking
-			if (currentAudioRef.current) {
-				console.log("🔇 Interrupting AI audio - user started speaking");
-				currentAudioRef.current.pause();
-				currentAudioRef.current = null;
+			// Enhanced interruption handling: Stop TTS when user starts speaking
+			if (ttsService && (ttsService.getState().isPlaying || ttsService.isTTSActive())) {
+				console.log("🔇 Interrupting TTS - user started speaking");
+				ttsService.stop(); // This will trigger onTTSActiveChange(false) and cleanup
+				
+				// Clear TTS pause flag since user is now speaking
+				isPausedByTTSRef.current = false;
+				
+				// Clear any pending restart timeouts
+				if (speechRestartTimeoutRef.current) {
+					clearTimeout(speechRestartTimeoutRef.current);
+					speechRestartTimeoutRef.current = null;
+				}
 			}
 
 			// Process only NEW results from lastProcessedResultIndexRef.current onwards
@@ -1165,8 +1197,11 @@ const ChatInterface = () => {
 				}
 			}
 
-			// Update mic state based on speech activity
-			if (finalTranscript || hasInterimResults) {
+			// Update mic state based on speech activity - only if not currently playing TTS
+			if (
+				(finalTranscript || hasInterimResults) &&
+				!ttsService.getState().isPlaying
+			) {
 				setMicState("listening");
 			}
 
@@ -1209,13 +1244,16 @@ const ChatInterface = () => {
 							"Silence detected, sending transcript:",
 							finalTranscript
 						);
-						setMicState("speaking"); // Set to speaking when AI is responding
+						// Don't set micState to "speaking" here - let TTS callbacks handle it
 						handleSendMessageRef.current(finalTranscript, true);
 						setTranscript("");
 					} else {
-						setMicState("idle"); // Back to idle if no transcript
+						// Only set to idle if TTS is not playing
+						if (!ttsService.getState().isPlaying) {
+							setMicState("idle");
+						}
 					}
-				}, 1000);
+				}, userSilenceTimeout);
 			}
 		};
 
@@ -1233,8 +1271,15 @@ const ChatInterface = () => {
 			if (silenceTimerRef.current) {
 				clearTimeout(silenceTimerRef.current);
 			}
+			// Clean up speech restart timeout
+			if (speechRestartTimeoutRef.current) {
+				clearTimeout(speechRestartTimeoutRef.current);
+				speechRestartTimeoutRef.current = null;
+			}
+			// Reset TTS pause flag
+			isPausedByTTSRef.current = false;
 		};
-	}, []); // Remove handleSendMessage from dependencies
+	}, [ttsService]); // Add ttsService dependency
 
 	// Update the ref whenever isVoiceMode changes
 	useEffect(() => {
@@ -1256,9 +1301,9 @@ const ChatInterface = () => {
 		scrollTimeoutRef.current = setTimeout(() => {
 			// Prefer scrolling to streaming message if it exists and has content
 			if (streamingMessageRef.current && streamingResponse) {
-				streamingMessageRef.current.scrollIntoView({ 
+				streamingMessageRef.current.scrollIntoView({
 					behavior: "smooth",
-					block: "end" // Ensure the bottom of the streaming message is visible
+					block: "end", // Ensure the bottom of the streaming message is visible
 				});
 			} else if (messagesEndRef.current) {
 				messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
@@ -1368,13 +1413,10 @@ const ChatInterface = () => {
 						{/* Close button */}
 						<button
 							onClick={() => {
-								// Stop any currently playing AI audio when closing popover
-								if (currentAudioRef.current) {
-									console.log("🔇 Stopping AI audio - popover closed");
-									currentAudioRef.current.pause();
-									currentAudioRef.current = null;
-									// Reset mic state to idle when audio is stopped
-									setMicState("idle");
+								// Stop any currently playing TTS when closing popover
+								if (ttsService && ttsService.getState().isPlaying) {
+									console.log("🔇 Stopping TTS - popover closed");
+									ttsService.stop(); // TTS callbacks will handle mic state reset
 								}
 								setShowMicPopover(false);
 								handleVoiceToggle();

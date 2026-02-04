@@ -1,0 +1,1 @@
+export const userSilenceTimeout = 2000; // 2 seconds of silence before considering user done
